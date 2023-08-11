@@ -1294,10 +1294,16 @@ and move clean blocks to buf_pool.free.
 static void buf_flush_LRU_list_batch(ulint max, bool evict,
                                      flush_counters_t *n)
 {
-  ulint scanned= 0;
+  ulint scanned= buf_pool.fully_initialized
+    ? 0 : buf_pool.lazy_allocate_size();
   ulint free_limit= srv_LRU_scan_depth;
 
-  mysql_mutex_assert_owner(&buf_pool.mutex);
+  if (scanned >= free_limit)
+    return;
+
+  free_limit-= scanned;
+  scanned= 0;
+
   if (buf_pool.withdraw_target && buf_pool.is_shrinking())
     free_limit+= buf_pool.withdraw_target - UT_LIST_GET_LEN(buf_pool.withdraw);
 
@@ -2315,7 +2321,8 @@ bool buf_pool_t::need_LRU_eviction() const
   /* try_LRU_scan==false means that buf_LRU_get_free_block() is waiting
   for buf_flush_page_cleaner() to evict some blocks */
   return UNIV_UNLIKELY(!try_LRU_scan ||
-                       (UT_LIST_GET_LEN(LRU) > BUF_LRU_MIN_LEN &&
+                       (fully_initialized &&
+                        UT_LIST_GET_LEN(LRU) > BUF_LRU_MIN_LEN &&
                         UT_LIST_GET_LEN(free) < srv_LRU_scan_depth / 2));
 }
 

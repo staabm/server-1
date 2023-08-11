@@ -853,8 +853,6 @@ inline bool buf_pool_t::chunk_t::create(size_t bytes)
   if (UNIV_UNLIKELY(!mem))
     return false;
 
-  MEM_UNDEFINED(mem, mem_size());
-
 #ifdef HAVE_LIBNUMA
   if (srv_numa_interleave)
   {
@@ -862,15 +860,14 @@ inline bool buf_pool_t::chunk_t::create(size_t bytes)
     if (mbind(mem, mem_size(), MPOL_INTERLEAVE,
               numa_mems_allowed->maskp, numa_mems_allowed->size,
               MPOL_MF_MOVE))
-    {
-      ib::warn() << "Failed to set NUMA memory policy of"
-              " buffer pool page frames to MPOL_INTERLEAVE"
-              " (error: " << strerror(errno) << ").";
-    }
+      sql_print_warning("InnoDB: Failed to set NUMA memory policy of"
+                        " buffer pool page frames to MPOL_INTERLEAVE"
+                        " (error: %s).", strerror(errno));
     numa_bitmask_free(numa_mems_allowed);
   }
 #endif /* HAVE_LIBNUMA */
 
+  MEM_UNDEFINED(mem, mem_size());
 
   /* Allocate the block descriptors from
   the start of the memory block. */
@@ -903,22 +900,49 @@ inline bool buf_pool_t::chunk_t::create(size_t bytes)
   }
 
   first_frame= frame;
+  MEM_NOACCESS(frame, mem_size() - (frame - mem));
 
-  buf_block_t *block= blocks;
+  /* The remaining blocks beyond the first one will be lazily
+  initialized in buf_pool_t::lazy_allocate(). */
+  blocks_end= blocks + 1;
 
-  for (auto i= size; i--; )
-  {
-    MEM_MAKE_DEFINED(block, sizeof *block);
-    ut_ad(!memcmp(block, field_ref_zero, sizeof *block));
-    block->page.lock.init();
-    UT_LIST_ADD_LAST(buf_pool.free, &block->page);
-    ut_d(block->page.in_free_list= TRUE);
-    block++;
-  }
+  MEM_MAKE_DEFINED(blocks, sizeof *blocks);
+  ut_ad(!memcmp(blocks, field_ref_zero, sizeof *blocks));
+
+  blocks->page.lock.init();
+  UT_LIST_ADD_LAST(buf_pool.free, &blocks->page);
+  ut_d(blocks->page.in_free_list= true);
 
   reg();
 
   return true;
+}
+
+/** Lazily initialize a block if one is available.
+@return freshly initialized buffer block
+@retval if all of the buffer pool has been initialized */
+buf_block_t *buf_pool_t::lazy_allocate()
+{
+  mysql_mutex_assert_owner(&buf_pool.mutex);
+
+  for (chunk_t *chunk= chunks, *end= chunks + std::min(n_chunks, n_chunks_new);
+       chunk != end; chunk++)
+  {
+    buf_block_t *block= chunk->blocks_end;
+    if (block - chunk->blocks < ptrdiff_t(chunk->size))
+    {
+      chunk->blocks_end= block + 1;
+      MEM_MAKE_DEFINED(block, sizeof *block);
+      ut_ad(!memcmp(block, field_ref_zero, sizeof *block));
+      block->page.lock.init();
+      MEM_MAKE_ADDRESSABLE(block->page.frame(), srv_page_size);
+      assert_block_ahi_empty(block);
+      block->page.set_state(buf_page_t::MEMORY);
+      return block;
+    }
+  }
+
+  return nullptr;
 }
 
 #ifdef UNIV_DEBUG
@@ -927,8 +951,7 @@ inline bool buf_pool_t::chunk_t::create(size_t bytes)
 @retval nullptr if all freed */
 inline const buf_block_t *buf_pool_t::chunk_t::not_freed() const
 {
-  buf_block_t *block= blocks;
-  for (auto i= size; i--; block++)
+  for (buf_block_t *block= blocks; block < blocks_end; block++)
   {
     if (block->page.in_file())
     {
@@ -1017,10 +1040,8 @@ bool buf_pool_t::create()
     {
       while (--chunk >= chunks)
       {
-        buf_block_t* block= chunk->blocks;
-
-        for (auto i= chunk->size; i--; block++)
-          block->page.lock.free();
+        for (buf_block_t* b= chunk->blocks; b < chunk->blocks_end; b++)
+          b->page.lock.free();
 
         allocator.deallocate_large_dodump(chunk->mem, &chunk->mem_pfx);
       }
@@ -1071,6 +1092,7 @@ bool buf_pool_t::create()
   pthread_cond_init(&done_free, nullptr);
 
   try_LRU_scan= true;
+  fully_initialized= false;
 
   ut_d(flush_hp.m_mutex= &flush_list_mutex;);
   ut_d(lru_hp.m_mutex= &mutex);
@@ -1126,10 +1148,8 @@ void buf_pool_t::close()
 
   for (auto chunk= chunks + n_chunks; --chunk >= chunks; )
   {
-    buf_block_t *block= chunk->blocks;
-
-    for (auto i= chunk->size; i--; block++)
-      block->page.lock.free();
+    for (buf_block_t *b= chunk->blocks; b < chunk->blocks_end; b++)
+      b->page.lock.free();
 
     allocator.deallocate_large_dodump(chunk->mem, &chunk->mem_pfx);
   }
@@ -1335,7 +1355,6 @@ buf_resize_status(
 @return whether retry is needed */
 inline bool buf_pool_t::withdraw_blocks()
 {
-	buf_block_t*	block;
 	ulint		loop_count = 0;
 
 	ib::info() << "start to withdraw the last "
@@ -1348,7 +1367,7 @@ inline bool buf_pool_t::withdraw_blocks()
 
 		mysql_mutex_lock(&mutex);
 		buf_buddy_condense_free();
-		block = reinterpret_cast<buf_block_t*>(
+		buf_block_t* block = reinterpret_cast<buf_block_t*>(
 			UT_LIST_GET_FIRST(free));
 		while (block != NULL
 		       && UT_LIST_GET_LEN(withdraw) < withdraw_target) {
@@ -1450,8 +1469,8 @@ realloc_frame:
 	/* confirm withdrawn enough */
 	for (const chunk_t* chunk = chunks + n_chunks_new,
 	     * const echunk = chunks + n_chunks; chunk != echunk; chunk++) {
-		block = chunk->blocks;
-		for (ulint j = chunk->size; j--; block++) {
+		for (buf_block_t* block = chunk->blocks;
+		     block < chunk->blocks_end; block++) {
 			ut_a(block->page.state() == buf_page_t::NOT_USED);
 			ut_ad(block->in_withdraw_list);
 		}
@@ -1564,6 +1583,7 @@ inline void buf_pool_t::resize()
 	n_chunks_new = (new_instance_size << srv_page_size_shift)
 		/ srv_buf_pool_chunk_unit;
 	curr_size = n_chunks_new * chunks->size;
+	fully_initialized= false;
 	mysql_mutex_unlock(&mutex);
 
 	if (is_shrinking()) {
@@ -1573,7 +1593,7 @@ inline void buf_pool_t::resize()
 		for (const chunk_t* chunk = chunks + n_chunks_new,
 		     * const echunk = chunks + n_chunks;
 		     chunk != echunk; chunk++)
-			w += chunk->size;
+			w += chunk->blocks_end - chunk->blocks;
 
 		ut_ad(withdraw_target == 0);
 		withdraw_target = w;
@@ -1691,9 +1711,8 @@ withdraw_retry:
 			MEM_MAKE_ADDRESSABLE(chunk->mem, chunk->size);
 #endif
 
-			buf_block_t*	block = chunk->blocks;
-
-			for (ulint j = chunk->size; j--; block++) {
+			for (buf_block_t* block = chunk->blocks;
+			     block < chunk->blocks_end; block++) {
 				block->page.lock.free();
 			}
 
@@ -3715,9 +3734,8 @@ void buf_pool_t::validate()
 	/* Check the uncompressed blocks. */
 
 	for (auto i = n_chunks; i--; chunk++) {
-		buf_block_t*	block = chunk->blocks;
-
-		for (auto j = chunk->size; j--; block++) {
+		for (buf_block_t* block = chunk->blocks;
+		     block < chunk->blocks_end; block++) {
 			ut_ad(is_uncompressed_ext(block));
 			switch (const auto f = block->page.state()) {
 			case buf_page_t::NOT_USED:
@@ -3842,10 +3860,8 @@ void buf_pool_t::print()
 	chunk = chunks;
 
 	for (i = n_chunks; i--; chunk++) {
-		buf_block_t*	block		= chunk->blocks;
-		ulint		n_blocks	= chunk->size;
-
-		for (; n_blocks--; block++) {
+		for (buf_block_t* block = chunk->blocks;
+		     block < chunk->blocks_end; block++) {
 			const buf_frame_t* frame = block->page.frame();
 
 			if (fil_page_index_page_check(frame)) {
