@@ -67,14 +67,15 @@ enum privilege_t: unsigned long long
   REPL_MASTER_ADMIN_ACL = (1ULL << 35), // Added in 10.5.2
   BINLOG_ADMIN_ACL      = (1ULL << 36), // Added in 10.5.2
   BINLOG_REPLAY_ACL     = (1ULL << 37), // Added in 10.5.2
-  SLAVE_MONITOR_ACL     = (1ULL << 38)  // Added in 10.5.8
+  SLAVE_MONITOR_ACL     = (1ULL << 38), // Added in 10.5.8
+  SHOW_CREATE_ROUTINE_ACL = (1ULL << 39)  // added in 10.6.17
   /*
     When adding new privilege bits, don't forget to update:
     In this file:
     - Add a new LAST_version_ACL
     - Add a new ALL_KNOWN_ACL_version
     - Change ALL_KNOWN_ACL to ALL_KNOWN_ACL_version
-    - Change GLOBAL_ACLS if needed
+    - Change GLOBAL_ACLS, DB_ACLS, TABLE_ACLS, PROC_ACLS if needed
     - Change SUPER_ADDED_SINCE_USER_TABLE_ACL if needed
 
     In other files:
@@ -103,9 +104,10 @@ constexpr static inline privilege_t ALL_KNOWN_BITS(privilege_t x)
 constexpr privilege_t LAST_100304_ACL= DELETE_HISTORY_ACL;
 constexpr privilege_t LAST_100502_ACL= BINLOG_REPLAY_ACL;
 constexpr privilege_t LAST_100508_ACL= SLAVE_MONITOR_ACL;
+constexpr privilege_t LAST_100617_ACL= SHOW_CREATE_ROUTINE_ACL;
 
 // Current version markers
-constexpr privilege_t LAST_CURRENT_ACL= LAST_100508_ACL;
+constexpr privilege_t LAST_CURRENT_ACL= LAST_100617_ACL;
 constexpr uint PRIVILEGE_T_MAX_BIT=
               my_bit_log2_uint64((ulonglong) LAST_CURRENT_ACL);
 
@@ -124,6 +126,9 @@ constexpr privilege_t ALL_KNOWN_ACL_100508= ALL_KNOWN_BITS(LAST_100508_ACL);
 // unfortunately, SLAVE_MONITOR_ACL was added in 10.5.9, but also in 10.5.8-5
 // let's stay compatible with that branch too.
 constexpr privilege_t ALL_KNOWN_ACL_100509= ALL_KNOWN_ACL_100508;
+
+// A combination of all bits defined in 10.6.17
+constexpr privilege_t ALL_KNOWN_ACL_100617= ALL_KNOWN_BITS(LAST_100617_ACL);
 
 // A combination of all bits defined as of the current version
 constexpr privilege_t ALL_KNOWN_ACL= ALL_KNOWN_BITS(LAST_CURRENT_ACL);
@@ -653,6 +658,7 @@ constexpr privilege_t DB_CHUNK3 (VIEW_ACLS | PROC_DDL_ACLS);
 constexpr privilege_t DB_CHUNK4 (EXECUTE_ACL);
 constexpr privilege_t DB_CHUNK5 (EVENT_ACL | TRIGGER_ACL);
 constexpr privilege_t DB_CHUNK6 (DELETE_HISTORY_ACL);
+constexpr privilege_t DB_CHUNK7 (SHOW_CREATE_ROUTINE_ACL);
 
 
 static inline privilege_t fix_rights_for_db(privilege_t access)
@@ -665,7 +671,8 @@ static inline privilege_t fix_rights_for_db(privilege_t access)
             ((A << 9) & DB_CHUNK3) |
             ((A << 2) & DB_CHUNK4) |
             ((A << 9) & DB_CHUNK5) |
-            ((A << 10) & DB_CHUNK6));
+            ((A << 10) & DB_CHUNK6) |
+            ((A << 19) & DB_CHUNK7));
 }
 
 static inline privilege_t get_rights_for_db(privilege_t access)
@@ -678,7 +685,8 @@ static inline privilege_t get_rights_for_db(privilege_t access)
            ((A & DB_CHUNK3) >> 9) |
            ((A & DB_CHUNK4) >> 2) |
            ((A & DB_CHUNK5) >> 9) |
-           ((A & DB_CHUNK6) >> 10));
+           ((A & DB_CHUNK6) >> 10) |
+           ((A & DB_CHUNK7) >> 19));
 }
 
 
@@ -732,9 +740,10 @@ static inline privilege_t fix_rights_for_procedure(privilege_t access)
 {
   ulonglong A(access);
   return static_cast<privilege_t>
-           (((A << 18) & EXECUTE_ACL)    |
-            ((A << 23) & ALTER_PROC_ACL) |
-            ((A << 8) & GRANT_ACL));
+           (((A << 35) & SHOW_CREATE_ROUTINE_ACL) |
+            ((A << 18) & EXECUTE_ACL)             |
+            ((A << 23) & ALTER_PROC_ACL)          |
+            ((A << 8)  & GRANT_ACL));
 }
 
 
@@ -742,9 +751,10 @@ static inline privilege_t get_rights_for_procedure(privilege_t access)
 {
   ulonglong A(access);
   return static_cast<privilege_t>
-           (((A & EXECUTE_ACL)    >> 18) |
-            ((A & ALTER_PROC_ACL) >> 23) |
-            ((A & GRANT_ACL) >> 8));
+           (((A & SHOW_CREATE_ROUTINE_ACL) >> 35) |
+            ((A & EXECUTE_ACL)             >> 18) |
+            ((A & ALTER_PROC_ACL)          >> 23) |
+            ((A & GRANT_ACL)               >> 8));
 }
 
 

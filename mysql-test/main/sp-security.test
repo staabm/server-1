@@ -1117,5 +1117,45 @@ execute s;
 drop function f;
 
 --echo #
+--echo # MDEV-29167 new db-level SHOW CREATE ROUTINE privilege
+--echo #
+
+#
+# it's test that the server starts with SHOW CREATE ROUTINE
+# in privilege tables, that is, doesn't fail on the unknown privilege,
+# but does not actually takes it into account or allows to grant it.
+#
+# this is 10.6-11.2 test, should be replaced in 11.3 by
+# a proper test for the SHOW CREATE ROUTINE privilege
+#
+create procedure sp1() select 1;
+create user testuser@localhost;
+grant execute on procedure sp1 to testuser@localhost;
+grant select on mysql.* to testuser@localhost;
+
+alter table mysql.procs_priv
+  modify proc_priv set('Execute','Alter Routine','Grant','Show Create Routine')
+    collate utf8mb3_general_ci default '' not null;
+alter table mysql.db
+  add Show_create_routine_priv enum('N','Y') collate utf8mb3_general_ci NOT NULL DEFAULT 'N'
+  after delete_history_priv;
+
+enable_info;
+update mysql.global_priv set priv=json_set(priv, '$.access', 654820258320) where user='testuser';
+update mysql.db set insert_priv='Y', show_create_routine_priv='Y' where user='testuser';
+update mysql.procs_priv set proc_priv='Execute,Alter Routine,Show Create Routine' where user='testuser';
+disable_info;
+
+flush privileges;
+show grants for testuser@localhost;
+
+drop user testuser@localhost;
+alter table mysql.procs_priv
+  modify Proc_priv set('Execute','Alter Routine','Grant')
+    collate utf8mb3_general_ci default '' not null;
+alter table mysql.db drop Show_create_routine_priv;
+drop procedure sp1;
+
+--echo #
 --echo # End of 10.6 tests
 --echo #

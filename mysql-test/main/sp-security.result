@@ -835,5 +835,39 @@ execute s;
 ERROR 42000: FUNCTION f already exists
 drop function f;
 #
+# MDEV-29167 new db-level SHOW CREATE ROUTINE privilege
+#
+create procedure sp1() select 1;
+create user testuser@localhost;
+grant execute on procedure sp1 to testuser@localhost;
+grant select on mysql.* to testuser@localhost;
+alter table mysql.procs_priv
+modify proc_priv set('Execute','Alter Routine','Grant','Show Create Routine')
+collate utf8mb3_general_ci default '' not null;
+alter table mysql.db
+add Show_create_routine_priv enum('N','Y') collate utf8mb3_general_ci NOT NULL DEFAULT 'N'
+  after delete_history_priv;
+update mysql.global_priv set priv=json_set(priv, '$.access', 654820258320) where user='testuser';
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+update mysql.db set insert_priv='Y', show_create_routine_priv='Y' where user='testuser';
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+update mysql.procs_priv set proc_priv='Execute,Alter Routine,Show Create Routine' where user='testuser';
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+flush privileges;
+show grants for testuser@localhost;
+Grants for testuser@localhost
+GRANT CREATE, FILE, INDEX, ALTER, EXECUTE, BINLOG MONITOR, SHOW VIEW, CREATE USER, EVENT, CREATE TABLESPACE, DELETE HISTORY, SET USER, REPLICATION MASTER ADMIN, BINLOG ADMIN ON *.* TO `testuser`@`localhost`
+GRANT SELECT, INSERT ON `mysql`.* TO `testuser`@`localhost`
+GRANT EXECUTE, ALTER ROUTINE ON PROCEDURE `test`.`sp1` TO `testuser`@`localhost`
+drop user testuser@localhost;
+alter table mysql.procs_priv
+modify Proc_priv set('Execute','Alter Routine','Grant')
+collate utf8mb3_general_ci default '' not null;
+alter table mysql.db drop Show_create_routine_priv;
+drop procedure sp1;
+#
 # End of 10.6 tests
 #

@@ -16,6 +16,10 @@ DROP USER user1@localhost;
 SELECT HEX(@all_known_privileges_current);
 HEX(@all_known_privileges_current)
 7FFFFFFFFF
+SET @all_known_privileges_current=GREATEST(@all_known_privileges_current, 0xffffffffff);
+SELECT HEX(@all_known_privileges_current);
+HEX(@all_known_privileges_current)
+FFFFFFFFFF
 CREATE USER bad_access1@localhost;
 UPDATE
 mysql.global_priv
