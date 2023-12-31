@@ -5243,7 +5243,8 @@ mysql_execute_command(THD *thd, bool is_called_from_prepared_stmt)
 #ifdef HAVE_QUERY_CACHE
     REFRESH_QUERY_CACHE_FREE                |
 #endif /* HAVE_QUERY_CACHE */
-    REFRESH_STATUS                          |
+    REFRESH_SESSION_STATUS                  |
+    REFRESH_GLOBAL_STATUS                   |
     REFRESH_USER_RESOURCES))
     {
       WSREP_TO_ISOLATION_BEGIN_WRTCHK(WSREP_MYSQL_DB, NULL, NULL);

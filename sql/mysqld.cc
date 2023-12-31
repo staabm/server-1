@@ -9103,7 +9103,7 @@ static void delete_pid_file(myf flags)
 
 
 /** Clear most status variables. */
-void refresh_status(THD *thd)
+void refresh_session_status(THD *thd)
 {
   mysql_mutex_lock(&LOCK_status);
 
@@ -9142,6 +9142,23 @@ void refresh_status(THD *thd)
   max_used_connections= connection_count + extra_connection_count;
   max_used_connections_time= time(nullptr);
 }
+
+
+/*
+  Refresh (reset) global status variables
+  TODO: Move things from refresh_session_status to refresh_global_status
+        MDEV-33145
+*/
+
+void refresh_global_status()
+{
+  mysql_mutex_lock(&LOCK_status);
+
+  /* Reset thread's status variables */
+  bzero((char*) &global_status_var, clear_up_to_tmp_space_used);
+  mysql_mutex_unlock(&LOCK_status);
+}
+
 
 #ifdef HAVE_PSI_INTERFACE
 static PSI_file_info all_server_files[]=
