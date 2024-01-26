@@ -3618,7 +3618,8 @@ bool Item_func_set_collation::fix_length_and_dec()
   }
   collation.set(m_set_collation, DERIVATION_EXPLICIT,
                 args[0]->collation.repertoire);
-  max_length= args[0]->max_length;
+  max_length= args[0]->max_length * collation.collation->mbmaxlen
+                         / args[0]->collation.collation->mbmaxlen;
   return FALSE;
 }
 
