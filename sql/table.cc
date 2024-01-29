@@ -1846,6 +1846,8 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
   */
   if (share->frm_version == FRM_VER_TRUE_VARCHAR -1 && frm_image[33] == 5)
     share->frm_version= FRM_VER_TRUE_VARCHAR;
+  if (share->frm_version <= FRM_VER_TRUE_VARCHAR)
+    share->keep_original_mysql_version= 1;
 
   new_field_pack_flag= frm_image[27];
   new_frm_ver= (frm_image[2] - FRM_VER);
