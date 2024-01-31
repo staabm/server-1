@@ -12227,6 +12227,67 @@ int ha_partition::info_push(uint info_type, void *info)
   DBUG_RETURN(error);
 }
 
+Item* ha_partition::idx_cond_push(uint keyno, Item* idx_cond)
+{
+   DBUG_ASSERT(pushed_idx_cond == nullptr);
+   DBUG_ASSERT(pushed_idx_cond_keyno == MAX_KEY);
+
+   for (uint i= bitmap_get_first_set(&m_part_info->read_partitions);
+        i < m_tot_parts;
+        i= bitmap_get_next_set(&m_part_info->read_partitions, i))
+   {
+     // We don't support pushdown to myisam because of issues with
+     // handling null selects.  According to our KB, "There is
+     // usually little reason to use it [MyISAM] except for legacy
+     // purposes."  It seems reasonable to exclude it from future
+     // developments, like index condition pushdown.
+     if (m_file[i]->ht->db_type == DB_TYPE_MYISAM)
+       return idx_cond;
+
+     Item* res= m_file[i]->idx_cond_push(keyno, idx_cond);
+     if (!res)  // Returning nullptr indicates success.
+       continue;
+
+     // One of the partitions couldn't accept the pushed condition, or
+     // one of the partitions returned a partial pushed condition that
+     // indicates that it could handle some portion of the pushed index
+     // condition.  At this point, we require all partitions to handle
+     // the pushed condition in the same way; consequently  we need to
+     // cancel the pushed condition for the partitions that succeeded
+     // up to this point.
+     DBUG_ASSERT(i == bitmap_get_first_set(&m_part_info->read_partitions));
+     DBUG_ASSERT(res == idx_cond);
+     if (res != idx_cond)
+       m_file[i]->cancel_pushed_idx_cond();
+     for (uint j= bitmap_get_first_set(&m_part_info->read_partitions);
+          j < i;
+          j= bitmap_get_next_set(&m_part_info->read_partitions, j))
+     {
+       m_file[j]->cancel_pushed_idx_cond();
+     }
+     return idx_cond;
+   }
+   pushed_idx_cond= idx_cond;
+   pushed_idx_cond_keyno= keyno;
+   return nullptr;
+}
+
+void ha_partition::cancel_pushed_idx_cond()
+{
+   pushed_idx_cond_keyno= MAX_KEY;
+
+   if (!pushed_idx_cond)
+       return;
+
+   for (uint i= bitmap_get_first_set(&m_part_info->read_partitions);
+        i < m_tot_parts;
+        i= bitmap_get_next_set(&m_part_info->read_partitions, i))
+   {
+     m_file[i]->cancel_pushed_idx_cond();
+   }
+
+   pushed_idx_cond= nullptr;
+}
 
 bool
 ha_partition::can_convert_nocopy(const Field &field,
