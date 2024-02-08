@@ -3135,10 +3135,16 @@ bool Window_funcs_sort::setup(THD *thd, SQL_SELECT *sel,
      */
     ORDER *order= (ORDER *)alloc_root(thd->mem_root, sizeof(ORDER));
     memset(order, 0, sizeof(*order));
-    Item_field *item=
-        new (thd->mem_root) Item_field(thd, join_tab->table->field[0]);
-    if (item)
-      item->set_refers_to_temp_table();
+    Item *item;
+    if (join_tab->table->field[0])
+    {
+      item=
+          new (thd->mem_root) Item_field(thd, join_tab->table->field[0]);
+      if (item)
+        ((Item_field*)item)->set_refers_to_temp_table();
+    }
+    else
+      item= join_tab->join->fields_list.elem(0);
     order->item= (Item **)alloc_root(thd->mem_root, 2 * sizeof(Item *));
     order->item[1]= NULL;
     order->item[0]= item;

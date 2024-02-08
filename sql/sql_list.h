@@ -156,7 +156,12 @@ public:
     return *this;
   }
 
-  inline void empty() { elements=0; first= &end_of_list; last=&first;}
+  inline void empty()
+  {
+    elements=0;
+    first= &end_of_list;
+    last=&first;
+  }
   inline base_list() { empty(); }
   /**
     This is a shallow copy constructor that implicitly passes the ownership
