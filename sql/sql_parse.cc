@@ -2402,6 +2402,12 @@ dispatch_end:
   {
     WSREP_DEBUG("THD is killed at dispatch_end");
   }
+
+  if (thd->reset_sp_cache)
+  {
+    thd->sp_caches_empty();
+    thd->reset_sp_cache= false;
+  }
   wsrep_after_command_before_result(thd);
   if (wsrep_current_error(thd) && !wsrep_command_no_result(command))
   {
@@ -6045,7 +6051,7 @@ mysql_execute_command(THD *thd)
       if (sph->sp_resolve_package_routine(thd, thd->lex->sphead,
                                           lex->spname, &sph, &pkgname))
         return true;
-      if (sph->sp_cache_routine(thd, lex->spname, false, &sp))
+      if (sph->sp_cache_routine(thd, lex->spname, &sp))
         goto error;
       if (!sp || sp->show_routine_code(thd))
       {
