@@ -342,7 +342,7 @@ static bool fil_node_open_file_low(fil_node_t *node)
   ut_ad(node->space->is_closing());
   mysql_mutex_assert_owner(&fil_system.mutex);
   static_assert(((UNIV_ZIP_SIZE_MIN >> 1) << 3) == 4096, "compatibility");
-#if defined _WIN32 || defined HAVE_FCNTL_DIRECT
+#if defined _WIN32 || defined O_DIRECT
   ulint type;
   switch (FSP_FLAGS_GET_ZIP_SSIZE(node->space->flags)) {
   case 1:
@@ -361,8 +361,7 @@ static bool fil_node_open_file_low(fil_node_t *node)
     bool success;
     node->handle= os_file_create(innodb_data_file_key, node->name,
                                  node->is_raw_disk
-                                 ? OS_FILE_OPEN_RAW | OS_FILE_ON_ERROR_NO_EXIT
-                                 : OS_FILE_OPEN | OS_FILE_ON_ERROR_NO_EXIT,
+                                 ? OS_FILE_OPEN_RAW : OS_FILE_OPEN,
                                  OS_FILE_AIO, type,
                                  srv_read_only_mode, &success);
 
@@ -1395,10 +1394,12 @@ ATTRIBUTE_COLD void fil_space_t::reopen_all()
 
       ulint type= OS_DATA_FILE;
 
+#if defined _WIN32 || defined O_DIRECT
       switch (FSP_FLAGS_GET_ZIP_SSIZE(space.flags)) {
       case 1: case 2:
         type= OS_DATA_FILE_NO_O_DIRECT;
       }
+#endif
 
       for (ulint count= 10000; count--;)
       {
@@ -2019,7 +2020,7 @@ fil_ibd_create(
 
 	static_assert(((UNIV_ZIP_SIZE_MIN >> 1) << 3) == 4096,
 		      "compatibility");
-#if defined _WIN32 || defined HAVE_FCNTL_DIRECT
+#if defined _WIN32 || defined O_DIRECT
 	ulint type;
 	switch (FSP_FLAGS_GET_ZIP_SSIZE(flags)) {
 	case 1:
@@ -2035,7 +2036,7 @@ fil_ibd_create(
 
 	file = os_file_create(
 		innodb_data_file_key, path,
-		OS_FILE_CREATE | OS_FILE_ON_ERROR_NO_EXIT,
+		OS_FILE_CREATE,
 		OS_FILE_AIO, type, srv_read_only_mode, &success);
 
 	if (!success) {
