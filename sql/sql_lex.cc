@@ -4105,11 +4105,16 @@ bool st_select_lex_unit::can_be_merged()
   for (SELECT_LEX_UNIT *tmp_unit= fs->first_inner_unit();
        tmp_unit;
        tmp_unit= tmp_unit->next_unit())
-    if ((tmp_unit->item != 0 &&
-         (tmp_unit->item->place() != IN_WHERE &&
+    if (tmp_unit->item)
+    {
+      if (tmp_unit->item->fixed() && 
+        tmp_unit->item->parent_select->table_list.elements == 0)
+          continue;
+      if (tmp_unit->item->place() != IN_WHERE &&
           tmp_unit->item->place() != IN_ON &&
-          tmp_unit->item->place() != SELECT_LIST)))
-      return false;
+          tmp_unit->item->place() != SELECT_LIST)
+        return false;
+    }
   return true;
 }
 
