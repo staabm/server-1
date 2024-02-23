@@ -2184,7 +2184,8 @@ dispatch_command_return dispatch_command(enum enum_server_command command, THD *
     if (trans_commit_implicit(thd))
       break;
     thd->release_transactional_locks();
-    if (check_global_access(thd,RELOAD_ACL))
+    if ((options & ~REFRESH_SESSION_STATUS) &&
+        check_global_access(thd,RELOAD_ACL))
       break;
     general_log_print(thd, command, NullS);
 #ifndef DBUG_OFF

@@ -358,7 +358,7 @@ bool reload_acl_and_cache(THD *thd, unsigned long long options,
     hostname_cache_refresh();
   if (thd && (options & REFRESH_SESSION_STATUS))
     refresh_session_status(thd);
-  if (thd && (options & REFRESH_GLOBAL_STATUS))
+  if ((options & REFRESH_GLOBAL_STATUS))
     refresh_global_status();
   if (options & REFRESH_THREADS)
     thread_cache.flush();
