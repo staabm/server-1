@@ -318,7 +318,7 @@ void mtr_t::release()
 inline lsn_t log_t::get_write_target() const
 {
 #ifndef SUX_LOCK_GENERIC
-  ut_ad(latch.is_locked());
+  ut_ad(latch.is_write_locked());
 #endif
   if (UNIV_LIKELY(buf_free < max_buf_free))
     return 0;
@@ -393,25 +393,13 @@ void mtr_t::commit()
       buf_pool.page_cleaner_wakeup();
       mysql_mutex_unlock(&buf_pool.flush_list_mutex);
 
-      if (m_latch_ex)
-      {
-        log_sys.latch.wr_unlock();
-        m_latch_ex= false;
-      }
-      else
-        log_sys.latch.rd_unlock();
+      log_sys.latch.wr_unlock();
 
       release();
     }
     else
     {
-      if (m_latch_ex)
-      {
-        log_sys.latch.wr_unlock();
-        m_latch_ex= false;
-      }
-      else
-        log_sys.latch.rd_unlock();
+      log_sys.latch.wr_unlock();
 
       for (auto it= m_memo.rbegin(); it != m_memo.rend(); )
       {
@@ -469,6 +457,7 @@ void mtr_t::commit()
       m_memo.clear();
     }
 
+    m_latch_ex= false;
     mariadb_increment_pages_updated(modified);
 
     if (UNIV_UNLIKELY(lsns.second != PAGE_FLUSH_NO))
@@ -876,65 +865,45 @@ ATTRIBUTE_COLD static void log_overwrite_warning(lsn_t lsn)
 }
 
 /** Wait in append_prepare() for buffer to become available
-@param lsn  log sequence number to write up to
-@param ex   whether log_sys.latch is exclusively locked */
-ATTRIBUTE_COLD void log_t::append_prepare_wait(lsn_t lsn, bool ex) noexcept
+@param lsn  log sequence number to write up to */
+ATTRIBUTE_COLD void log_t::append_prepare_wait(lsn_t lsn) noexcept
 {
   waits++;
-  unlock_lsn();
 
-  if (ex)
-    latch.wr_unlock();
-  else
-    latch.rd_unlock();
+  latch.wr_unlock();
 
   log_write_up_to(lsn, is_pmem());
 
-  if (ex)
-    latch.wr_lock(SRW_LOCK_CALL);
-  else
-    latch.rd_lock(SRW_LOCK_CALL);
-
-  lock_lsn();
+  latch.wr_lock(SRW_LOCK_CALL);
 }
 
 /** Reserve space in the log buffer for appending data.
 @tparam pmem  log_sys.is_pmem()
 @param size   total length of the data to append(), in bytes
-@param ex     whether log_sys.latch is exclusively locked
 @return the start LSN and the buffer position for append() */
 template<bool pmem>
 inline
-std::pair<lsn_t,byte*> log_t::append_prepare(size_t size, bool ex) noexcept
+std::pair<lsn_t,byte*> log_t::append_prepare(size_t size) noexcept
 {
 #ifndef SUX_LOCK_GENERIC
-  ut_ad(latch.is_locked());
-# ifndef _WIN32 // there is no accurate is_write_locked() on SRWLOCK
-  ut_ad(ex == latch.is_write_locked());
-# endif
+  ut_ad(latch.is_write_locked());
 #endif
   ut_ad(pmem == is_pmem());
-  lock_lsn();
   write_to_buf++;
 
   const lsn_t l{lsn.load(std::memory_order_relaxed)}, end_lsn{l + size};
-  size_t b{buf_free};
 
   if (UNIV_UNLIKELY(pmem
                     ? (end_lsn -
                        get_flushed_lsn(std::memory_order_relaxed)) > capacity()
-                    : b + size >= buf_size))
-  {
-    append_prepare_wait(l, ex);
-    b= buf_free;
-  }
+                    : buf_free + size >= buf_size))
+    append_prepare_wait(l);
 
   lsn.store(end_lsn, std::memory_order_relaxed);
-  size_t new_buf_free= b + size;
-  if (pmem && new_buf_free >= file_size)
-    new_buf_free-= size_t(capacity());
-  buf_free= new_buf_free;
-  unlock_lsn();
+  const size_t b{buf_free};
+  buf_free+= size;
+  if (pmem && buf_free >= file_size)
+    buf_free-= size_t(capacity());
 
   if (UNIV_UNLIKELY(end_lsn >= last_checkpoint_lsn + log_capacity))
     set_check_for_checkpoint();
@@ -1052,22 +1021,15 @@ std::pair<lsn_t,mtr_t::page_flush_ahead> mtr_t::do_write()
   }
 
   if (!m_latch_ex)
-    log_sys.latch.rd_lock(SRW_LOCK_CALL);
+  {
+    m_latch_ex= true;
+    log_sys.latch.wr_lock(SRW_LOCK_CALL);
+  }
 
   if (UNIV_UNLIKELY(m_user_space && !m_user_space->max_lsn &&
                     !is_predefined_tablespace(m_user_space->id)))
-  {
-    if (!m_latch_ex)
-    {
-      m_latch_ex= true;
-      log_sys.latch.rd_unlock();
-      log_sys.latch.wr_lock(SRW_LOCK_CALL);
-      if (UNIV_UNLIKELY(m_user_space->max_lsn != 0))
-        goto func_exit;
-    }
     name_write();
-  }
-func_exit:
+
   return finish_write(len);
 }
 
@@ -1186,10 +1148,10 @@ mtr_t::finish_write(size_t len)
 {
   ut_ad(!recv_no_log_write);
   ut_ad(is_logged());
+  ut_ad(m_latch_ex);
+
 #ifndef SUX_LOCK_GENERIC
-# ifndef _WIN32 // there is no accurate is_write_locked() on SRWLOCK
-  ut_ad(m_latch_ex == log_sys.latch.is_write_locked());
-# endif
+  ut_ad(log_sys.latch.is_write_locked());
 #endif
 
   const size_t size{m_commit_lsn ? 5U + 8U : 5U};
@@ -1197,7 +1159,7 @@ mtr_t::finish_write(size_t len)
 
   if (!log_sys.is_pmem())
   {
-    start= log_sys.append_prepare<false>(len, m_latch_ex);
+    start= log_sys.append_prepare<false>(len);
     m_log.for_each_block([&start](const mtr_buf_t::block_t *b)
     { log_sys.append(start.second, b->begin(), b->used()); return true; });
 
@@ -1217,7 +1179,7 @@ mtr_t::finish_write(size_t len)
 #ifdef HAVE_PMEM
   else
   {
-    start= log_sys.append_prepare<true>(len, m_latch_ex);
+    start= log_sys.append_prepare<true>(len);
     if (UNIV_LIKELY(start.second + len <= &log_sys.buf[log_sys.file_size]))
     {
       m_log.for_each_block([&start](const mtr_buf_t::block_t *b)

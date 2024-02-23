@@ -176,28 +176,18 @@ private:
   This must hold if lsn - last_checkpoint_lsn > max_checkpoint_age. */
   std::atomic<bool> need_checkpoint;
 
-#if defined(__aarch64__)
-  /* On ARM, we do more spinning */
   typedef srw_spin_lock log_rwlock;
-  typedef pthread_mutex_wrapper<true> log_lsn_lock;
-#else
-  typedef srw_lock log_rwlock;
-  typedef srw_mutex log_lsn_lock;
-#endif
 
 public:
   /** rw-lock protecting writes to buf; normal mtr_t::commit()
   outside any log checkpoint is covered by a shared latch */
   alignas(CPU_LEVEL1_DCACHE_LINESIZE) log_rwlock latch;
-private:
-  /** mutex protecting buf_free et al, together with latch */
-  log_lsn_lock lsn_lock;
 public:
-  /** first free offset within buf use; protected by lsn_lock */
-  Atomic_relaxed<size_t> buf_free;
-  /** number of write requests (to buf); protected by lsn_lock */
+  /** first free offset within buf use; protected by latch */
+  size_t buf_free;
+  /** number of write requests (to buf); protected by latch */
   size_t write_to_buf;
-  /** number of append_prepare_wait(); protected by lsn_lock */
+  /** number of append_prepare_wait(); protected by latch */
   size_t waits;
 private:
   /** Last written LSN */
@@ -228,11 +218,6 @@ private:
   byte *resize_buf;
   /** Buffer for writing to resize_log; @see flush_buf */
   byte *resize_flush_buf;
-
-  void init_lsn_lock() {lsn_lock.init(); }
-  void lock_lsn() { lsn_lock.wr_lock(); }
-  void unlock_lsn() {lsn_lock.wr_unlock(); }
-  void destroy_lsn_lock() { lsn_lock.destroy(); }
 
 public:
   /** recommended maximum size of buf, after which the buffer is flushed */
@@ -444,17 +429,15 @@ public:
 
 private:
   /** Wait in append_prepare() for buffer to become available
-  @param lsn  log sequence number to write up to
-  @param ex   whether log_sys.latch is exclusively locked */
-  ATTRIBUTE_COLD void append_prepare_wait(lsn_t lsn, bool ex) noexcept;
+  @param lsn  log sequence number to write up to */
+  ATTRIBUTE_COLD void append_prepare_wait(lsn_t lsn) noexcept;
 public:
   /** Reserve space in the log buffer for appending data.
   @tparam pmem  log_sys.is_pmem()
   @param size   total length of the data to append(), in bytes
-  @param ex     whether log_sys.latch is exclusively locked
   @return the start LSN and the buffer position for append() */
   template<bool pmem>
-  inline std::pair<lsn_t,byte*> append_prepare(size_t size, bool ex) noexcept;
+  inline std::pair<lsn_t,byte*> append_prepare(size_t size) noexcept;
 
   /** Append a string of bytes to the redo log.
   @param d     destination

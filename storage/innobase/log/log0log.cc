@@ -134,7 +134,6 @@ bool log_t::create()
 #endif
 
   latch.SRW_LOCK_INIT(log_latch_key);
-  init_lsn_lock();
 
   last_checkpoint_lsn= FIRST_LSN;
   log_capacity= 0;
@@ -838,17 +837,16 @@ template<bool release_latch> inline lsn_t log_t::write_buf() noexcept
     DBUG_PRINT("ib_log", ("write " LSN_PF " to " LSN_PF " at " LSN_PF,
                           write_lsn, lsn, offset));
     const byte *write_buf{buf};
+    ut_ad(buf_free >= (calc_lsn_offset(write_lsn) & block_size_1));
     size_t length{buf_free};
-    ut_ad(length >= (calc_lsn_offset(write_lsn) & block_size_1));
-    const size_t new_buf_free{length & block_size_1};
-    buf_free= new_buf_free;
-    ut_ad(new_buf_free == ((lsn - first_lsn) & block_size_1));
+    buf_free&= block_size_1;
+    ut_ad(buf_free == ((lsn - first_lsn) & block_size_1));
 
-    if (new_buf_free)
+    if (buf_free)
     {
 #if 0 /* TODO: Pad the last log block with dummy records. */
-      buf_free= log_pad(lsn, get_block_size() - new_buf_free,
-                        buf + new_buf_free, flush_buf);
+      buf_free= log_pad(lsn, get_block_size() - buf_free,
+                        buf + buf_free, flush_buf);
       ... /* TODO: Update the LSN and adjust other code. */
 #else
       /* The rest of the block will be written as garbage.
@@ -856,16 +854,16 @@ template<bool release_latch> inline lsn_t log_t::write_buf() noexcept
       This block will be overwritten later, once records beyond
       the current LSN are generated. */
 # ifdef HAVE_valgrind
-      MEM_MAKE_DEFINED(buf + length, get_block_size() - new_buf_free);
+      MEM_MAKE_DEFINED(buf + length, get_block_size() - buf_free);
       if (UNIV_LIKELY_NULL(resize_flush_buf))
-        MEM_MAKE_DEFINED(resize_buf + length, get_block_size() - new_buf_free);
+        MEM_MAKE_DEFINED(resize_buf + length, get_block_size() - buf_free);
 # endif
       buf[length]= 0; /* allow recovery to catch EOF faster */
       length&= ~block_size_1;
-      memcpy_aligned<16>(flush_buf, buf + length, (new_buf_free + 15) & ~15);
+      memcpy_aligned<16>(flush_buf, buf + length, (buf_free + 15) & ~15);
       if (UNIV_LIKELY_NULL(resize_flush_buf))
         memcpy_aligned<16>(resize_flush_buf, resize_buf + length,
-                           (new_buf_free + 15) & ~15);
+                           (buf_free + 15) & ~15);
       length+= get_block_size();
 #endif
     }
@@ -1309,7 +1307,6 @@ void log_t::close()
 #endif
 
   latch.destroy();
-  destroy_lsn_lock();
 
   recv_sys.close();
 
