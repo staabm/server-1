@@ -1,0 +1,7 @@
+buf_pool_resize_oom : MDEV-29445 FIXME
+innodb_buffer_pool_resize : MDEV-29445 FIXME
+innodb_buffer_pool_resize_bigtest : MDEV-29445 FIXME
+innodb_buffer_pool_resize_temporary : MDEV-29445 FIXME
+innodb_buffer_pool_resize_with_chunks : MDEV-29445 FIXME
+recovery_memory : MDEV-29445 FIXME
+restart : MDEV-29445 FIXME

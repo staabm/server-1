@@ -874,7 +874,6 @@ relocate_compressed:
 		ut_a(b);
 		mysql_mutex_lock(&buf_pool.flush_list_mutex);
 		new (b) buf_page_t(*bpage);
-		b->frame_ = nullptr;
 		{
 			ut_d(uint32_t s=) b->fix();
 			ut_ad(s == buf_page_t::FREED

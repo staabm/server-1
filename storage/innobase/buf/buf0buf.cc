@@ -824,34 +824,19 @@ void buf_page_print(const byte *read_buf, ulint zip_size)
 #endif
 }
 
-/** Initialize a buffer page descriptor.
-@param[in,out]	block	buffer page descriptor
-@param[in]	frame	buffer page frame */
-static
-void
-buf_block_init(buf_block_t* block, byte* frame)
+static byte *first_frame;
+
+byte *buf_page_t::frame() const
 {
-	/* This function should only be executed at database startup or by
-	buf_pool.resize(). Either way, adaptive hash index must not exist. */
-	assert_block_ahi_empty_on_init(block);
+  const buf_pool_t::chunk_t &chunk= *buf_pool.chunks;
+  const buf_block_t *const blocks= chunk.blocks;
+  const buf_block_t *const block= reinterpret_cast<const buf_block_t*>(this);
 
-	block->page.frame_ = frame;
+  if (block >= blocks && block <= &blocks[chunk.size])
+    return first_frame + srv_page_size * (block - blocks);
 
-	MEM_MAKE_DEFINED(&block->modify_clock, sizeof block->modify_clock);
-	ut_ad(!block->modify_clock);
-	MEM_MAKE_DEFINED(&block->page.lock, sizeof block->page.lock);
-	block->page.init(buf_page_t::NOT_USED, page_id_t(~0ULL));
-#ifdef BTR_CUR_HASH_ADAPT
-	MEM_MAKE_DEFINED(&block->index, sizeof block->index);
-	ut_ad(!block->index);
-#endif /* BTR_CUR_HASH_ADAPT */
-	ut_d(block->in_unzip_LRU_list = false);
-	ut_d(block->in_withdraw_list = false);
-
-	page_zip_des_init(&block->page.zip);
-
-	MEM_MAKE_DEFINED(&block->page.hash, sizeof block->page.hash);
-	ut_ad(!block->page.hash);
+  ut_ad(buf_pool.n_chunks == 1);
+  return nullptr;
 }
 
 /** Allocate a chunk of buffer frames.
@@ -917,20 +902,18 @@ inline bool buf_pool_t::chunk_t::create(size_t bytes)
     size= s;
   }
 
-  /* Init block structs and assign frames for them. Then we assign the
-  frames to the first blocks (we already mapped the memory above). */
+  first_frame= frame;
 
   buf_block_t *block= blocks;
 
-  for (auto i= size; i--; ) {
-    buf_block_init(block, frame);
-    MEM_UNDEFINED(block->page.frame(), srv_page_size);
-    /* Add the block to the free list */
+  for (auto i= size; i--; )
+  {
+    MEM_MAKE_DEFINED(block, sizeof *block);
+    ut_ad(!memcmp(block, field_ref_zero, sizeof *block));
+    block->page.lock.init();
     UT_LIST_ADD_LAST(buf_pool.free, &block->page);
-
-    ut_d(block->page.in_free_list = TRUE);
+    ut_d(block->page.in_free_list= TRUE);
     block++;
-    frame+= srv_page_size;
   }
 
   reg();
@@ -1134,7 +1117,7 @@ void buf_pool_t::close()
           ? (oldest == 0 || oldest == 2)
           : oldest <= 1 || srv_is_being_started || srv_fast_shutdown == 2);
 
-    if (UNIV_UNLIKELY(!bpage->frame_))
+    if (UNIV_UNLIKELY(!is_uncompressed_ext(bpage)))
     {
       bpage->lock.free();
       ut_free(bpage);
@@ -1177,7 +1160,7 @@ inline bool buf_pool_t::realloc(buf_block_t *block)
 
 	mysql_mutex_assert_owner(&mutex);
 	ut_ad(block->page.in_file());
-	ut_ad(block->page.frame_);
+	ut_ad(is_uncompressed_ext(block));
 
 	new_block = buf_LRU_get_free_only();
 
@@ -1205,7 +1188,6 @@ inline bool buf_pool_t::realloc(buf_block_t *block)
 		mysql_mutex_lock(&buf_pool.flush_list_mutex);
 		new_block->page.lock.free();
 		new (&new_block->page) buf_page_t(block->page);
-		new_block->page.frame_ = frame;
 
 		/* relocate LRU list */
 		if (buf_page_t*	prev_b = buf_pool.LRU_remove(&block->page)) {
@@ -1947,12 +1929,9 @@ static void buf_relocate(buf_page_t *bpage, buf_page_t *dpage)
   ut_ad(state >= buf_page_t::FREED);
   ut_ad(state <= buf_page_t::READ_FIX);
   ut_ad(bpage->lock.is_write_locked());
-  const auto frame= dpage->frame();
 
   dpage->lock.free();
   new (dpage) buf_page_t(*bpage);
-
-  dpage->frame_= frame;
 
   /* Important that we adjust the hazard pointer before
   removing bpage from LRU list. */
@@ -2134,7 +2113,7 @@ void buf_page_free(fil_space_t *space, uint32_t page, mtr_t *mtr)
       {buf_pool.page_hash.lock_get(chain)};
     block= reinterpret_cast<buf_block_t*>
       (buf_pool.page_hash.get(page_id, chain));
-    if (!block || !block->page.frame_)
+    if (!block || !buf_pool.is_uncompressed_ext(block))
       /* FIXME: convert ROW_FORMAT=COMPRESSED, without buf_zip_decompress() */
       return;
     /* To avoid a deadlock with buf_LRU_free_page() of some other page
@@ -2202,7 +2181,7 @@ lookup:
         xend();
         return nullptr;
       }
-      if (discard_attempted || !bpage->frame_)
+      if (discard_attempted || !buf_pool.is_uncompressed_ext(bpage))
       {
         if (!bpage->lock.s_lock_try())
           xabort();
@@ -2232,7 +2211,7 @@ lookup:
         return nullptr;
       }
 
-      if (discard_attempted || !bpage->frame_)
+      if (discard_attempted || !buf_pool.is_uncompressed_ext(bpage))
       {
         const bool got_s_latch= bpage->lock.s_lock_try();
         hash_lock.unlock_shared();
@@ -2566,7 +2545,7 @@ ignore_block:
 			return nullptr;
 		}
 
-		if (UNIV_UNLIKELY(!block->page.frame_)) {
+		if (UNIV_UNLIKELY(!buf_pool.is_uncompressed_ext(block))) {
 			goto wait_for_unzip;
 		}
 		/* A read-fix is released after block->page.lock
@@ -3739,7 +3718,7 @@ void buf_pool_t::validate()
 		buf_block_t*	block = chunk->blocks;
 
 		for (auto j = chunk->size; j--; block++) {
-			ut_ad(block->page.frame_);
+			ut_ad(is_uncompressed_ext(block));
 			switch (const auto f = block->page.state()) {
 			case buf_page_t::NOT_USED:
 				n_free++;
@@ -3778,7 +3757,7 @@ void buf_pool_t::validate()
 		ut_ad(!fsp_is_system_temporary(b->id().space()));
 		n_flushing++;
 
-		if (UNIV_UNLIKELY(!b->frame_)) {
+		if (UNIV_UNLIKELY(!is_uncompressed_ext(b))) {
 			n_lru++;
 			n_zip++;
 		}

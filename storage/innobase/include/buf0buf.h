@@ -557,12 +557,11 @@ public:
   /** buf_pool.LRU status mask in state() */
   static constexpr uint32_t LRU_MASK= 7U << 29;
 
-  /** lock covering the contents of frame */
+  /** lock covering the contents of frame() */
   block_lock lock;
-  /** pointer to aligned, uncompressed page frame of innodb_page_size */
-  byte *frame_;
 
-  byte *frame() const { return frame_; }
+  /** @return the uncompressed page frame */
+  byte *frame() const;
   /* @} */
   /** ROW_FORMAT=COMPRESSED page; zip.data (but not the data it points to)
   is also protected by buf_pool.mutex;
@@ -632,7 +631,7 @@ public:
     id_(b.id_), hash(b.hash),
     oldest_modification_(b.oldest_modification_),
     lock() /* not copied */,
-    frame_(b.frame_), zip(b.zip),
+    zip(b.zip),
 #ifdef UNIV_DEBUG
     in_zip_hash(b.in_zip_hash), in_LRU_list(b.in_LRU_list),
     in_page_hash(b.in_page_hash), in_free_list(b.in_free_list),
@@ -1200,6 +1199,7 @@ struct buf_buddy_stat_t {
 /** The buffer pool */
 class buf_pool_t
 {
+  friend buf_page_t;
   /** A chunk of buffers */
   struct chunk_t
   {
