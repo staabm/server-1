@@ -8211,7 +8211,10 @@ err_exit:
 				/* Clear the to_be_dropped flags, which might
 				have been set at this point. */
 				for (ulint i = 0; i < n_drop_index; i++) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
 					ut_ad(drop_index[i]->is_committed());
+#pragma GCC diagnostic pop
 					drop_index[i]->to_be_dropped = 0;
 				}
 
