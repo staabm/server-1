@@ -1,0 +1,9 @@
+# --let $restart_parameters= --plugin-load-add=ha_spider --transaction-read-only=on
+# --source include/restart_mysqld.inc
+# call mtr.add_suppression("\\[ERROR\\] SPIDER plugin initialization failed");
+# call mtr.add_suppression(".*\\[ERROR\\] Plugin 'SPIDER' registration as a STORAGE ENGINE failed.")
+# call mtr.add_suppression(".*\\[ERROR\\] Plugin 'SPIDER_WRAPPER_PROTOCOLS' registration as a INFORMATION SCHEMA failed.")
+# call mtr.add_suppression(".*\\[ERROR\\] Plugin 'SPIDER_ALLOC_MEM' registration as a INFORMATION SCHEMA failed.")
+
+--error ER_UNKNOWN_TABLE
+SELECT * FROM information_schema.SPIDER_ALLOC_MEM;

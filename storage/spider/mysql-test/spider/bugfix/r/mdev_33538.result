@@ -1,0 +1,2 @@
+SELECT * FROM information_schema.SPIDER_ALLOC_MEM;
+ERROR 42S02: Unknown table 'SPIDER_ALLOC_MEM' in information_schema
