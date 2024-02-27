@@ -41,11 +41,16 @@ struct st_parse_result
 static void parse_json(const uchar *j, struct st_parse_result *result)
 {
   json_engine_t je;
+  je.stack= (int*)malloc(JSON_DEPTH_DEFAULT * sizeof(int));
+  memset(je.stack, 0, JSON_DEPTH_DEFAULT * sizeof(int));
 
   bzero(result, sizeof(*result));
 
   if (json_scan_start(&je, ci, s_e(j)))
+  {
+    free(je.stack);
     return;
+  }
 
   do
   {
@@ -75,6 +80,7 @@ static void parse_json(const uchar *j, struct st_parse_result *result)
     };
   } while (json_scan_next(&je) == 0);
 
+  free(je.stack);
   result->error= je.s.error;
 }
 
@@ -140,11 +146,19 @@ test_search()
   json_path_t p;
   json_path_step_t *cur_step;
   int n_matches, scal_values;
-  int array_counters[JSON_DEPTH_LIMIT];
+  int curr_json_depth_limit= JSON_DEPTH_DEFAULT;
+  int *array_counters= (int*) malloc(curr_json_depth_limit * sizeof(int));
+  je.stack= (int *) malloc(sizeof(int)*JSON_DEPTH_DEFAULT);
+  memset(array_counters, 0, curr_json_depth_limit * sizeof(int));
+  memset(je.stack, 0, JSON_DEPTH_DEFAULT * sizeof(int));
 
   if (json_scan_start(&je, ci, s_e(fj0)) ||
       json_path_setup(&p, ci, s_e(fp0)))
+  {
+    free(array_counters);
+    free(je.stack);
     return;
+  }
 
   cur_step= p.steps;
   n_matches= scal_values= 0;
@@ -152,21 +166,35 @@ test_search()
   {
     n_matches++;
     if (json_read_value(&je))
+    {
+      free(array_counters);
+      free(je.stack);
       return;
+    }
     if (json_value_scalar(&je))
     {
       scal_values++;
       if (json_scan_next(&je))
+      {
+        free(array_counters);
+        free(je.stack);
         return;
+      }
     }
     else
     {
       if (json_skip_level(&je) || json_scan_next(&je))
+      {
+        free(array_counters);
+        free(je.stack);
         return;
+      }
     }
 
   }
 
+  free(je.stack);
+  free(array_counters);
   ok(n_matches == 3, "search");
 }
 

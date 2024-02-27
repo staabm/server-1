@@ -550,6 +550,15 @@ extern "C"
   }
 }
 
+extern "C"
+{
+  int thd_get_json_depth()
+  {
+    THD *thd= _current_thd();
+    return thd->variables.json_depth_limit;
+  }
+}
+
 
 #if MARIA_PLUGIN_INTERFACE_VERSION < 0x0200
 /**

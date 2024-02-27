@@ -1767,6 +1767,7 @@ class User_table_json: public User_table
     int value_len;
     const char *value_start;
     enum json_types value_type;
+    json_engine_t temp_je;
     String str, *res= m_table->field[2]->val_str(&str);
     if (!res || !res->length())
       (res= &str)->set(STRING_WITH_LEN("{}"), m_table->field[2]->charset());
@@ -1792,7 +1793,7 @@ class User_table_json: public User_table
     if (!value_type && string)
       json.append('"');
     json.append(value_start, res->end() - value_start);
-    DBUG_ASSERT(json_valid(json.ptr(), json.length(), json.charset()));
+    DBUG_ASSERT((json_valid(json.ptr(), json.length(), json.charset(), &temp_je) == 0));
     m_table->field[2]->store(json.ptr(), json.length(), json.charset());
     return value_type;
   }

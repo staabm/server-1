@@ -14,13 +14,13 @@ show create table t1;
 create or replace table t1(a json not null check (json_valid(a)));
 show create table t1;
 insert t1 values ('[]');
---error ER_CONSTRAINT_FAILED
+--error ER_JSON_SYNTAX
 insert t1 values ('a');
 
 create or replace table t1(a json not null);
 show create table t1;
 insert t1 values ('[]');
---error ER_CONSTRAINT_FAILED
+--error ER_JSON_SYNTAX
 insert t1 values ('a');
 
 set timestamp=unix_timestamp('2010:11:12 13:14:15');
@@ -54,7 +54,7 @@ drop table t1;
 create or replace table t1(a json default(json_object('now', 1)) check (json_valid(a)));
 insert into t1 values ();
 insert into t1 values ("{}");
---error ER_CONSTRAINT_FAILED
+--error ER_JSON_SYNTAX
 insert into t1 values ("xxx");
 select * from t1;
 show create table t1;

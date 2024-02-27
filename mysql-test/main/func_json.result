@@ -4,6 +4,8 @@ json_valid('[1, 2]')
 select json_valid('"string"}');
 json_valid('"string"}')
 0
+Warnings:
+Warning	4038	Syntax error in JSON text in argument 1 to function 'JSON_VALID' at position 9
 select json_valid('{"key1":1, "key2":[2,3]}');
 json_valid('{"key1":1, "key2":[2,3]}')
 1
@@ -13,9 +15,13 @@ json_valid('[false, true, null]')
 select json_valid(repeat('[', 1000));
 json_valid(repeat('[', 1000))
 0
+Warnings:
+Warning	4040	Limit of 32 on JSON nested structures depth is reached in argument 1 to function 'JSON_VALID' at position 32
 select json_valid(repeat('{"a":', 1000));
 json_valid(repeat('{"a":', 1000))
 0
+Warnings:
+Warning	4040	Limit of 32 on JSON nested structures depth is reached in argument 1 to function 'JSON_VALID' at position 156
 select json_value('{"key1":123}', '$.key2');
 json_value('{"key1":123}', '$.key2')
 NULL
@@ -44,8 +50,7 @@ select json_query('{"key1":123, "key1": [1,2,3]}', '$.key1');
 json_query('{"key1":123, "key1": [1,2,3]}', '$.key1')
 [1,2,3]
 select json_query('{"key1":123, "key1": [1,2,3]}', concat('$', repeat('.k', 1000))) as exp;
-exp
-NULL
+ERROR HY000: Limit of 32 on JSON path depth is reached in argument 2 to function 'json_query' at position 65
 select json_array();
 json_array()
 []
@@ -733,6 +738,8 @@ Warning	4042	Syntax error in JSON path in argument 3 to function 'json_contains_
 select JSON_VALID(0x36f0c8dccd83c5eac156da);
 JSON_VALID(0x36f0c8dccd83c5eac156da)
 0
+Warnings:
+Warning	4035	Broken JSON string in argument 1 to function 'JSON_VALID' at position 1
 create table t1(a double not null);
 insert into t1 values (2),(1);
 select 1 from t1 where json_extract(a,'$','$[81]');
@@ -832,6 +839,8 @@ SET sql_mode=default;
 select JSON_VALID( '{"a":1]' );
 JSON_VALID( '{"a":1]' )
 0
+Warnings:
+Warning	4038	Syntax error in JSON text in argument 1 to function 'JSON_VALID' at position 7
 #
 # MDEV-18886 JSON_ARRAY() does not recognise JSON argument.
 #
@@ -1486,12 +1495,18 @@ JSON_VALUE(' {"number": 0E-4}', '$.number')
 select JSON_VALID(' {"number": 00E-4}');
 JSON_VALID(' {"number": 00E-4}')
 0
+Warnings:
+Warning	4038	Syntax error in JSON text in argument 1 to function 'JSON_VALID' at position 14
 select JSON_VALID(' {"number": 01E-4}');
 JSON_VALID(' {"number": 01E-4}')
 0
+Warnings:
+Warning	4038	Syntax error in JSON text in argument 1 to function 'JSON_VALID' at position 14
 select JSON_VALID(' {"number": 0E-4.0}');
 JSON_VALID(' {"number": 0E-4.0}')
 0
+Warnings:
+Warning	4038	Syntax error in JSON text in argument 1 to function 'JSON_VALID' at position 17
 #
 # End of 10.4 tests
 #
@@ -4795,9 +4810,10 @@ NULL
 SELECT JSON_KEY_VALUE('', '$.a');
 JSON_KEY_VALUE('', '$.a')
 NULL
+Warnings:
+Warning	4037	Unexpected end of JSON text in argument 1 to function 'json_key_value'
 SELECT JSON_KEY_VALUE('[1,2,3]', '');
-JSON_KEY_VALUE('[1,2,3]', '')
-NULL
+ERROR HY000: Unexpected end of JSON path in argument 2 to function 'json_key_value'
 SELECT JSON_KEY_VALUE('[1,2,3]', NULL);
 JSON_KEY_VALUE('[1,2,3]', NULL)
 NULL
@@ -4845,8 +4861,7 @@ k	v	id
 # With non-scalar
 # With array
 SELECT JSON_KEY_VALUE('[]', '[0]');
-JSON_KEY_VALUE('[]', '[0]')
-NULL
+ERROR HY000: Syntax error in JSON path in argument 2 to function 'json_key_value' at position 1
 SELECT JSON_KEY_VALUE('[1, 2, 3]', '$[0]');
 JSON_KEY_VALUE('[1, 2, 3]', '$[0]')
 NULL
