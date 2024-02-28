@@ -136,7 +136,7 @@ static inline void incr_LRU_size_in_bytes(const buf_page_t* bpage)
 
 	buf_pool.stat.LRU_bytes += bpage->physical_size();
 
-	ut_ad(buf_pool.stat.LRU_bytes <= buf_pool.curr_pool_size);
+	ut_ad(buf_pool.stat.LRU_bytes <= buf_pool.curr_pool_size());
 }
 
 /** @return whether the unzip_LRU list should be used for evicting a victim
@@ -306,19 +306,6 @@ buf_block_t* buf_LRU_get_free_only()
 	return buf_pool.lazy_allocate();
 }
 
-ulint buf_pool_t::lazy_allocate_size()
-{
-  mysql_mutex_assert_owner(&mutex);
-  ulint size= 0;
-  for (const chunk_t *chunk= chunks,
-         *const end= chunks + std::min(n_chunks, n_chunks_new);
-       chunk != end; chunk++)
-    size+= chunk->size - (chunk->blocks_end - chunk->blocks);
-  if (!size)
-    fully_initialized= true;
-  return size;
-}
-
 /******************************************************************//**
 Checks how much of buf_pool is occupied by non-data objects like
 AHI, lock heaps etc. Depending on the size of non-data objects this
@@ -328,14 +315,15 @@ static void buf_LRU_check_size_of_non_data_objects()
 {
   mysql_mutex_assert_owner(&buf_pool.mutex);
 
-  if (recv_recovery_is_on() || buf_pool.n_chunks_new != buf_pool.n_chunks)
+  if (recv_recovery_is_on())
     return;
 
-  auto s= UT_LIST_GET_LEN(buf_pool.free) + UT_LIST_GET_LEN(buf_pool.LRU);
-  if (s < buf_pool.curr_size / 3 && !buf_pool.fully_initialized)
-    s+= buf_pool.lazy_allocate_size();
+  const size_t curr_size{buf_pool.curr_size()};
 
-  if (s < buf_pool.curr_size / 20)
+  auto s= UT_LIST_GET_LEN(buf_pool.free) + UT_LIST_GET_LEN(buf_pool.LRU) +
+    curr_size - buf_pool.get_n_pages();
+
+  if (s < curr_size / 20)
     ib::fatal() << "Over 95 percent of the buffer pool is"
             " occupied by lock heaps"
 #ifdef BTR_CUR_HASH_ADAPT
@@ -343,10 +331,10 @@ static void buf_LRU_check_size_of_non_data_objects()
 #endif /* BTR_CUR_HASH_ADAPT */
             "! Check that your transactions do not set too many"
             " row locks, or review if innodb_buffer_pool_size="
-                << (buf_pool.curr_size >> (20U - srv_page_size_shift))
+                << (curr_size >> (20U - srv_page_size_shift))
                 << "M could be bigger.";
 
-  if (s < buf_pool.curr_size / 3)
+  if (s < curr_size / 3)
   {
     if (!buf_lru_switched_on_innodb_mon && srv_monitor_timer)
     {
@@ -359,7 +347,7 @@ static void buf_LRU_check_size_of_non_data_objects()
 #endif /* BTR_CUR_HASH_ADAPT */
               "! Check that your transactions do not set too many row locks."
               " innodb_buffer_pool_size="
-                 << (buf_pool.curr_size >> (20U - srv_page_size_shift))
+                 << (curr_size >> (20U - srv_page_size_shift))
                  << "M. Starting the InnoDB Monitor to print diagnostics.";
       buf_lru_switched_on_innodb_mon= true;
       srv_print_innodb_monitor= TRUE;
@@ -433,7 +421,7 @@ got_block:
 		const ulint LRU_size = UT_LIST_GET_LEN(buf_pool.LRU);
 		const ulint available = UT_LIST_GET_LEN(buf_pool.free);
 		const ulint scan_depth = srv_LRU_scan_depth / 2;
-		ut_ad(!buf_pool.fully_initialized
+		ut_ad(buf_pool.lazy_allocate_size()
 		      || LRU_size <= BUF_LRU_MIN_LEN || available >= scan_depth
 		      || buf_pool.need_LRU_eviction());
 
@@ -442,7 +430,7 @@ got_block:
 		}
 
 		if (UNIV_UNLIKELY(available < scan_depth)
-		    && buf_pool.fully_initialized
+		    && !buf_pool.lazy_allocate_size()
 		    && LRU_size > BUF_LRU_MIN_LEN) {
 			mysql_mutex_lock(&buf_pool.flush_list_mutex);
 			if (!buf_pool.page_cleaner_active()) {
@@ -500,7 +488,7 @@ not_found:
 	}
 
 	if (n_iterations == 21
-	    && srv_buf_pool_old_size == srv_buf_pool_size
+	    && buf_pool.size_in_bytes_requested == buf_pool.curr_pool_size()
 	    && buf_pool.LRU_warned.test_and_set(std::memory_order_acquire)) {
 		IF_DBUG(buf_lru_free_blocks_error_printed = true,);
 		mysql_mutex_unlock(&buf_pool.mutex);
@@ -884,7 +872,7 @@ bool buf_LRU_free_page(buf_page_t *bpage, bool zip)
 		/* fall through */
 	case 0:
 		if (zip || !bpage->zip.data
-		    || !buf_pool.is_uncompressed_ext(bpage)) {
+		    || !buf_pool.is_uncompressed(bpage)) {
 			break;
 		}
 relocate_compressed:
@@ -902,7 +890,7 @@ relocate_compressed:
 		break;
 	default:
 		if (zip || !bpage->zip.data
-		    || !buf_pool.is_uncompressed_ext(bpage)) {
+		    || !buf_pool.is_uncompressed(bpage)) {
 			/* This would completely free the block. */
 			/* Do not completely free dirty blocks. */
 func_exit:
@@ -943,7 +931,7 @@ func_exit:
 		buf_LRU_block_remove_hashed(), which
 		invokes buf_LRU_remove_block(). */
 		ut_ad(!bpage->in_LRU_list);
-		ut_ad(buf_pool.is_uncompressed_ext(bpage));
+		ut_ad(buf_pool.is_uncompressed(bpage));
 		ut_ad(!((buf_block_t*) bpage)->in_unzip_LRU_list);
 
 		/* The fields of bpage were copied to b before

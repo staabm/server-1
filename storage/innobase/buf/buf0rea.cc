@@ -372,7 +372,7 @@ buf_read_ahead_random(const page_id_t page_id, ulint zip_size, bool ibuf)
     return 0;
 
   if (os_aio_pending_reads_approx() >
-      buf_pool.curr_size / BUF_READ_AHEAD_PEND_LIMIT)
+      buf_pool.get_n_pages() / BUF_READ_AHEAD_PEND_LIMIT)
     return 0;
 
   fil_space_t* space= fil_space_t::get(page_id.space());
@@ -526,7 +526,7 @@ buf_read_ahead_linear(const page_id_t page_id, ulint zip_size, bool ibuf)
     return 0;
 
   if (os_aio_pending_reads_approx() >
-      buf_pool.curr_size / BUF_READ_AHEAD_PEND_LIMIT)
+      buf_pool.curr_size() / BUF_READ_AHEAD_PEND_LIMIT)
     return 0;
 
   const uint32_t buf_read_ahead_area= buf_pool.read_ahead_area;

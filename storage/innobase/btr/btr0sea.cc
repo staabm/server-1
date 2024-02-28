@@ -264,17 +264,13 @@ void btr_search_disable()
 @param resize whether buf_pool_t::resize() is the caller */
 void btr_search_enable(bool resize)
 {
-	if (!resize) {
-		mysql_mutex_lock(&buf_pool.mutex);
-		bool changed = srv_buf_pool_old_size != srv_buf_pool_size;
-		mysql_mutex_unlock(&buf_pool.mutex);
-		if (changed) {
-			return;
-		}
+	if (!resize &&
+	    buf_pool.size_in_bytes_requested != buf_pool.curr_pool_size()) {
+		return;
 	}
 
 	btr_search_x_lock_all();
-	ulint hash_size = buf_pool_get_curr_size() / sizeof(void *) / 64;
+	ulint hash_size = buf_pool.curr_size() / sizeof(void *) / 64;
 
 	if (btr_search_sys.parts[0].heap) {
 		ut_ad(btr_search_enabled);
@@ -948,78 +944,42 @@ inline void buf_pool_t::clear_hash_index()
 
   std::set<dict_index_t*> garbage;
 
-  for (chunk_t *chunk= chunks + n_chunks; chunk-- != chunks; )
+  for (buf_block_t *block= blocks, *end= blocks + n_blocks; block != end;
+       block++)
   {
-    for (buf_block_t *block= chunk->blocks; block != chunk->blocks_end;
-         block++)
+    dict_index_t *index= block->index;
+    assert_block_ahi_valid(block);
+
+    /* We can clear block->index and block->n_pointers when
+    holding all AHI latches exclusively; see the comments in buf0buf.h */
+
+    if (!index)
     {
-      dict_index_t *index= block->index;
-      assert_block_ahi_valid(block);
-
-      /* We can clear block->index and block->n_pointers when
-      holding all AHI latches exclusively; see the comments in buf0buf.h */
-
-      if (!index)
-      {
 # if defined UNIV_AHI_DEBUG || defined UNIV_DEBUG
-        ut_a(!block->n_pointers);
+      ut_a(!block->n_pointers);
 # endif /* UNIV_AHI_DEBUG || UNIV_DEBUG */
-        continue;
-      }
-
-      ut_d(const auto s= block->page.state());
-      /* Another thread may have set the state to
-      REMOVE_HASH in buf_LRU_block_remove_hashed().
-
-      The state change in buf_pool_t::realloc() is not observable
-      here, because in that case we would have !block->index.
-
-      In the end, the entire adaptive hash index will be removed. */
-      ut_ad(s >= buf_page_t::UNFIXED || s == buf_page_t::REMOVE_HASH);
-# if defined UNIV_AHI_DEBUG || defined UNIV_DEBUG
-      block->n_pointers= 0;
-# endif /* UNIV_AHI_DEBUG || UNIV_DEBUG */
-      if (index->freed())
-        garbage.insert(index);
-      block->index= nullptr;
+      continue;
     }
+
+    ut_d(const auto s= block->page.state());
+    /* Another thread may have set the state to
+    REMOVE_HASH in buf_LRU_block_remove_hashed().
+
+    The state change in buf_pool_t::realloc() is not observable
+    here, because in that case we would have !block->index.
+
+    In the end, the entire adaptive hash index will be removed. */
+    ut_ad(s >= buf_page_t::UNFIXED || s == buf_page_t::REMOVE_HASH);
+# if defined UNIV_AHI_DEBUG || defined UNIV_DEBUG
+    block->n_pointers= 0;
+# endif /* UNIV_AHI_DEBUG || UNIV_DEBUG */
+    if (index->freed())
+      garbage.insert(index);
+    block->index= nullptr;
   }
 
   for (dict_index_t *index : garbage)
     btr_search_lazy_free(index);
-}
-
-/** Get a buffer block from an adaptive hash index pointer.
-This function does not return if the block is not identified.
-@param ptr  pointer to within a page frame
-@return pointer to block, never NULL */
-inline buf_block_t* buf_pool_t::block_from_ahi(const byte *ptr) const
-{
-  chunk_t::map *chunk_map = chunk_t::map_ref;
-  ut_ad(chunk_t::map_ref == chunk_t::map_reg);
-  ut_ad(!resizing);
-
-  chunk_t::map::const_iterator it= chunk_map->upper_bound(ptr);
-  ut_a(it != chunk_map->begin());
-
-  chunk_t *chunk= it == chunk_map->end()
-    ? chunk_map->rbegin()->second
-    : (--it)->second;
-
-  const size_t offs= size_t(ptr - chunk->blocks->page.frame()) >>
-    srv_page_size_shift;
-  ut_a(ptrdiff_t(offs) < chunk->blocks_end - chunk->blocks);
-
-  buf_block_t *block= &chunk->blocks[offs];
-  /* buf_pool_t::chunk_t::init() invokes buf_block_init() so that
-  block[n].frame() == block->page.frame() + n * srv_page_size.  Check it. */
-  ut_ad(block->page.frame() == page_align(ptr));
-  /* Read the state of the block without holding hash_lock.
-  A state transition to REMOVE_HASH is possible during
-  this execution. */
-  ut_ad(block->page.state() >= buf_page_t::REMOVE_HASH);
-
-  return block;
 }
 
 /** Tries to guess the right search position based on the hash search info
@@ -1104,7 +1064,7 @@ fail:
 		return false;
 	}
 
-	buf_block_t* block = buf_pool.block_from_ahi(rec);
+	buf_block_t* block = buf_pool.block_from(rec);
 
 	buf_pool_t::hash_chain& chain = buf_pool.page_hash.cell_get(
 		block->page.id().fold());
@@ -2183,7 +2143,7 @@ func_exit:
 
 		for (; node != NULL; node = node->next) {
 			const buf_block_t*	block
-				= buf_pool.block_from_ahi((byte*) node->data);
+				= buf_pool.block_from(node->data);
 			index_id_t		page_index_id;
 
 			if (UNIV_LIKELY(block->page.in_file())) {

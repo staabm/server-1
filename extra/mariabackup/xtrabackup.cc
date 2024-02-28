@@ -2244,7 +2244,7 @@ static bool innodb_init_param()
 	}
 
 	srv_sys_space.normalize_size();
-	srv_lock_table_size = 5 * (srv_buf_pool_size >> srv_page_size_shift);
+	srv_lock_table_size = 5 * buf_pool.curr_size(); // FIXME: check this
 
 	/* -------------- Log files ---------------------------*/
 
@@ -2266,11 +2266,7 @@ static bool innodb_init_param()
 
 	srv_adaptive_flushing = FALSE;
 
-        /* We set srv_pool_size here in units of 1 kB. InnoDB internally
-        changes the value so that it becomes the number of database pages. */
-
-	srv_buf_pool_size = (ulint) xtrabackup_use_memory;
-	srv_buf_pool_chunk_unit = (ulong)srv_buf_pool_size;
+	buf_pool.size_in_bytes_requested = size_t(xtrabackup_use_memory);
 
 	srv_n_read_io_threads = (uint) innobase_read_io_threads;
 	srv_n_write_io_threads = (uint) innobase_write_io_threads;
@@ -4714,22 +4710,6 @@ fail:
 		return(false);
 	}
 
-	if (srv_buf_pool_size >= 1000 * 1024 * 1024) {
-                                  /* Here we still have srv_pool_size counted
-                                  in kilobytes (in 4.0 this was in bytes)
-				  srv_boot() converts the value to
-                                  pages; if buffer pool is less than 1000 MB,
-                                  assume fewer threads. */
-                srv_max_n_threads = 50000;
-
-	} else if (srv_buf_pool_size >= 8 * 1024 * 1024) {
-
-                srv_max_n_threads = 10000;
-        } else {
-		srv_max_n_threads = 1000;       /* saves several MB of memory,
-                                                especially in 64-bit
-                                                computers */
-        }
 	srv_thread_pool_init();
 	/* Reset the system variables in the recovery module. */
 	trx_pool_init();

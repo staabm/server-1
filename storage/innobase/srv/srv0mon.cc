@@ -1625,7 +1625,7 @@ srv_mon_process_existing_counter(
 		break;
 
 	case MONITOR_OVLD_BUFFER_POOL_SIZE:
-		value = srv_buf_pool_size;
+		value = buf_pool.curr_size();
 		break;
 
 	/* innodb_rows_read */

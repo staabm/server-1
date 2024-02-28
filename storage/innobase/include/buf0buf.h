@@ -35,7 +35,6 @@ Created 11/5/1995 Heikki Tuuri
 #include "assume_aligned.h"
 #include "buf0types.h"
 #ifndef UNIV_INNOCHECKSUM
-#include "ut0byte.h"
 #include "page0types.h"
 #include "log0log.h"
 #include "srv0srv.h"
@@ -142,8 +141,6 @@ operator<<(
 	const page_id_t		page_id);
 
 #ifndef UNIV_INNOCHECKSUM
-# define buf_pool_get_curr_size() srv_buf_pool_curr_size
-
 /** Allocate a buffer block.
 @return own: the allocated block, state()==MEMORY */
 inline buf_block_t *buf_block_alloc();
@@ -432,14 +429,6 @@ counter value in MONITOR_MODULE_BUF_PAGE.
 @param bpage   buffer page whose read or write was completed
 @param read    true=read, false=write */
 ATTRIBUTE_COLD void buf_page_monitor(const buf_page_t &bpage, bool read);
-
-/** Calculate aligned buffer pool size based on srv_buf_pool_chunk_unit,
-if needed.
-@param[in]	size	size in bytes
-@return	aligned size */
-ulint
-buf_pool_size_align(
-	ulint	size);
 
 /** Verify that post encryption checksum match with the calculated checksum.
 This function should be called only if tablespace contains crypt data metadata.
@@ -1199,62 +1188,37 @@ struct buf_buddy_stat_t {
 /** The buffer pool */
 class buf_pool_t
 {
-  friend buf_page_t;
-  /** A chunk of buffers */
-  struct chunk_t
-  {
-    /** number of elements in blocks[] */
-    size_t size;
-    /** memory allocated for the page frames */
-    unsigned char *mem;
-    /** descriptor of mem */
-    ut_new_pfx_t mem_pfx;
-    /** array of buffer control blocks (initialized up to blocks_end) */
-    buf_block_t *blocks;
-    /** the first uninitialized buffer control block, or blocks+size if all
-    blocks have been initialized */
-    buf_block_t *blocks_end;
+  /** first array of buffer control blocks */
+  alignas(CPU_LEVEL1_DCACHE_LINESIZE) buf_block_t *blocks;
+#ifdef UNIV_PFS_MEMORY
+  /** the "owner thread" of the buffer pool allocation */
+  PSI_thread *owner;
+#endif
+  /** initialized size of blocks[] */
+  size_t n_blocks;
+  /** allocated size of blocks[] */
+  size_t n_blocks_alloc;
 
-    /** Map of first page frame address to chunks[] */
-    using map= std::map<const void*, chunk_t*, std::less<const void*>,
-                        ut_allocator<std::pair<const void* const,chunk_t*>>>;
-    /** Chunk map that may be under construction by buf_resize_thread() */
-    static map *map_reg;
-    /** Current chunk map for lookup only */
-    static map *map_ref;
+  /** amount of memory allocated to the buffer pool and descriptors */
+  Atomic_relaxed<size_t> size_in_bytes;
 
-    /** @return the memory size bytes. */
-    size_t mem_size() const { return mem_pfx.m_size; }
-
-    /** Register the chunk */
-    void reg() { map_reg->emplace(map::value_type(blocks->page.frame(), this)); }
-
-    /** Allocate a chunk of buffer frames.
-    @param bytes    requested size
-    @return whether the allocation succeeded */
-    inline bool create(size_t bytes);
-
-#ifdef UNIV_DEBUG
-    /** Find a block that points to a ROW_FORMAT=COMPRESSED page
-    @param data  pointer to the start of a ROW_FORMAT=COMPRESSED page frame
-    @return the block
-    @retval nullptr  if not found */
-    const buf_block_t *contains_zip(const void *data) const
-    {
-      const buf_block_t *block= blocks;
-      for (auto i= size; i--; block++)
-        if (block->page.zip.data == data)
-          return block;
-      return nullptr;
-    }
-
-    /** Check that all blocks are in a replaceable state.
-    @return address of a non-free block
-    @retval nullptr if all freed */
-    inline const buf_block_t *not_freed() const;
-#endif /* UNIV_DEBUG */
-  };
 public:
+  /** The requested innodb_buffer_pool_size */
+  Atomic_relaxed<size_t> size_in_bytes_requested;
+  /** The maximum allowed innodb_buffer_pool_size */
+  size_t size_in_bytes_max;
+
+  /** @return the current size of the buffer pool, in bytes */
+  size_t curr_pool_size() const { return size_in_bytes; }
+
+  /** @return the first buffer block */
+  const buf_block_t *first_block() const { return blocks; }
+
+  /** @return the current initialized size in blocks */
+  size_t get_n_pages() const { return n_blocks; }
+  /** @return the current size of the buffer pool, in pages */
+  size_t curr_size() const { return n_blocks_alloc; }
+
   /** Hash cell chain in page_hash_table */
   struct hash_chain
   {
@@ -1266,39 +1230,20 @@ private:
   @return whether retry is needed */
   inline bool withdraw_blocks();
 
-  /** Determine if a pointer belongs to a buf_block_t. It can be a pointer to
-  the buf_block_t itself or a member of it.
-  @param ptr      a pointer that will not be dereferenced
-  @param n_chunks number of buffer pool chunks to consider
-  @return whether the ptr belongs to a buf_block_t struct */
-  bool is_block_field(const void *ptr, size_t n_chunks) const
-  {
-    const chunk_t *chunk= chunks;
-    const chunk_t *const echunk= chunk + n_chunks;
-
-    /* TODO: protect chunks with a mutex (the older pointer will
-    currently remain during resize()) */
-    for (; chunk < echunk; chunk++)
-      if (ptr >= reinterpret_cast<const void*>(chunk->blocks) &&
-          ptr < reinterpret_cast<const void*>(chunk->blocks_end))
-        return true;
-    return false;
-  }
-
   /** Try to reallocate a control block.
   @param block  control block to reallocate
   @return whether the reallocation succeeded */
   inline bool realloc(buf_block_t *block);
 
 public:
-  bool is_initialised() const { return chunks != nullptr; }
+  bool is_initialised() const { return blocks != nullptr; }
 
   /** Create the buffer pool.
   @return whether the creation failed */
   bool create();
 
   /** @return number of blocks available to lazy_allocate() */
-  ulint lazy_allocate_size();
+  size_t lazy_allocate_size() const { return n_blocks_alloc - n_blocks; };
 
   /** Lazily initialize a block after create().
   @return freshly initialized buffer block
@@ -1317,55 +1262,15 @@ public:
     return UNIV_UNLIKELY(resizing.load(std::memory_order_relaxed));
   }
 
-  /** @return the current size in blocks */
-  size_t get_n_pages() const
-  {
-    ut_ad(is_initialised());
-    size_t size= 0;
-    for (auto j= ut_min(n_chunks_new, n_chunks); j--; )
-      size+= chunks[j].size;
-    return size;
-  }
-
   /** Determine whether a frame is intended to be withdrawn during resize().
   @param ptr    pointer within a buf_page_t::frame
   @return whether the frame will be withdrawn */
-  bool will_be_withdrawn(const byte *ptr) const
-  {
-    ut_ad(n_chunks_new < n_chunks);
-#ifdef SAFE_MUTEX
-    if (resize_in_progress())
-      mysql_mutex_assert_owner(&mutex);
-#endif /* SAFE_MUTEX */
-
-    for (const chunk_t *chunk= chunks + n_chunks_new,
-         * const echunk= chunks + n_chunks;
-         chunk != echunk; chunk++)
-      if (ptr >= chunk->blocks->page.frame() &&
-          ptr < (chunk->blocks_end - 1)->page.frame() + srv_page_size)
-        return true;
-    return false;
-  }
+  bool will_be_withdrawn(const byte *ptr) const;
 
   /** Determine whether a block is intended to be withdrawn during resize().
   @param bpage  buffer pool block
   @return whether the frame will be withdrawn */
-  bool will_be_withdrawn(const buf_page_t &bpage) const
-  {
-    ut_ad(n_chunks_new < n_chunks);
-#ifdef SAFE_MUTEX
-    if (resize_in_progress())
-      mysql_mutex_assert_owner(&mutex);
-#endif /* SAFE_MUTEX */
-
-    for (const chunk_t *chunk= chunks + n_chunks_new,
-         * const echunk= chunks + n_chunks;
-         chunk != echunk; chunk++)
-      if (&bpage >= &chunk->blocks->page &&
-          &bpage < &chunk->blocks_end->page)
-        return true;
-    return false;
-  }
+  bool will_be_withdrawn(const buf_page_t &bpage) const;
 
   /** Release and evict a corrupted page.
   @param bpage    x-latched page that was found corrupted
@@ -1382,11 +1287,9 @@ public:
   @retval nullptr  if not found */
   const buf_block_t *contains_zip(const void *data) const
   {
-    mysql_mutex_assert_owner(&mutex);
-    for (const chunk_t *chunk= chunks, * const end= chunks + n_chunks;
-         chunk != end; chunk++)
-      if (const buf_block_t *block= chunk->contains_zip(data))
-        return block;
+    for (size_t i= 0; i < n_blocks; i++)
+      if (blocks[i].page.zip.data == data)
+        return &blocks[i];
     return nullptr;
   }
 
@@ -1397,12 +1300,6 @@ public:
 #ifdef BTR_CUR_HASH_ADAPT
   /** Clear the adaptive hash index on all pages in the buffer pool. */
   inline void clear_hash_index();
-
-  /** Get a buffer block from an adaptive hash index pointer.
-  This function does not return if the block is not identified.
-  @param ptr  pointer to within a page frame
-  @return pointer to block, never NULL */
-  inline buf_block_t *block_from_ahi(const byte *ptr) const;
 #endif /* BTR_CUR_HASH_ADAPT */
 
   /**
@@ -1425,31 +1322,23 @@ public:
     return empty_lsn;
   }
 
-  /** Determine if a buffer block was created by chunk_t::create(),
+  /** Look up the block descriptor for a page frame address.
+  @param ptr   address within a page frame
+  @return the block descriptor
+  @retval nullptr  if there is no block corresponding to the page frame */
+  buf_block_t *block_from(const void *ptr) const;
+
+  /** Determine if a buffer block was created by create(),
   disregarding blocks that are subject to withdrawal in resize().
   @param block  block descriptor (not dereferenced)
-  @return whether block has been created by chunk_t::create() */
+  @return whether block has been created by create() */
   bool is_uncompressed(const buf_block_t *block) const
   {
-    return is_block_field(reinterpret_cast<const void*>(block),
-                          std::min(n_chunks, n_chunks_new));
+    return (block - blocks) >= 0 && size_t(block - blocks) < n_blocks;
   }
-
-  /** Determine if a buffer block was created by chunk_t::create()
-  and possibly subject to withdrawal during resize().
-  @param block  block descriptor (not dereferenced)
-  @return whether block has been created by chunk_t::create() */
-  bool is_uncompressed_ext(const buf_block_t *block) const
+  bool is_uncompressed(const buf_page_t *bpage) const
   {
-    return is_block_field(reinterpret_cast<const void*>(block), n_chunks);
-  }
-  /** Determine if a buffer block was created by chunk_t::create()
-  and possibly subject to withdrawal during resize().
-  @param block  block descriptor (not dereferenced)
-  @return whether block has been created by chunk_t::create() */
-  bool is_uncompressed_ext(const buf_page_t *bpage) const
-  {
-    return is_block_field(reinterpret_cast<const void*>(bpage), n_chunks);
+    return is_uncompressed(reinterpret_cast<const buf_block_t*>(bpage));
   }
 
 public:
@@ -1528,22 +1417,13 @@ public:
   inline uint32_t watch_remove(buf_page_t *w, hash_chain &chain);
 
   /** @return whether less than 1/4 of the buffer pool is available */
-  TPOOL_SUPPRESS_TSAN
-  bool running_out() const
-  {
-    return !recv_recovery_is_on() && fully_initialized &&
-      UT_LIST_GET_LEN(free) + UT_LIST_GET_LEN(LRU) <
-        n_chunks_new / 4 * chunks->size;
-  }
+  bool running_out() const;
 
   /** @return whether the buffer pool is running low */
   bool need_LRU_eviction() const;
 
   /** @return whether the buffer pool is shrinking */
-  inline bool is_shrinking() const
-  {
-    return n_chunks_new < n_chunks;
-  }
+  bool is_shrinking() const { return size_in_bytes_requested < size_in_bytes; }
 
 #ifdef UNIV_DEBUG
   /** Validate the buffer pool. */
@@ -1583,7 +1463,6 @@ public:
 
 	/** @name General fields */
 	/* @{ */
-	ulint		curr_pool_size;	/*!< Current pool size in bytes */
 	ulint		LRU_old_ratio;  /*!< Reserve this much of the buffer
 					pool for "old" blocks */
 #ifdef UNIV_DEBUG
@@ -1591,18 +1470,6 @@ public:
 					the buffer pool to the buddy system */
 	ulint		mutex_exit_forbidden; /*!< Forbid release mutex */
 #endif
-	ut_allocator<unsigned char>	allocator;	/*!< Allocator used for
-					allocating memory for the the "chunks"
-					member. */
-	ulint		n_chunks;	/*!< number of buffer pool chunks */
-	ulint		n_chunks_new;	/*!< new number of buffer pool chunks.
-					both n_chunks{,new} are protected under
-					mutex */
-	chunk_t*	chunks;		/*!< buffer pool chunks */
-	chunk_t*	chunks_old;	/*!< old buffer pool chunks to be freed
-					after resizing buffer pool */
-	/** current pool size in pages */
-	Atomic_counter<ulint> curr_size;
 	/** read-ahead request size in pages */
 	Atomic_counter<uint32_t> read_ahead_area;
 
@@ -1857,9 +1724,6 @@ public:
   Set whenever the free list grows, along with a broadcast of done_free.
   Protected by buf_pool.mutex. */
   Atomic_relaxed<bool> try_LRU_scan;
-
-  /** Whether lazy_allocate_size() == 0 */
-  Atomic_relaxed<bool> fully_initialized;
 
   /** Whether we have warned to be running out of buffer pool */
   std::atomic_flag LRU_warned;

@@ -1528,40 +1528,24 @@ void recv_sys_t::debug_free()
 inline void recv_sys_t::free(const void *data)
 {
   ut_ad(!ut_align_offset(data, ALIGNMENT));
-  data= page_align(data);
   mysql_mutex_assert_owner(&mutex);
 
-  /* MDEV-14481 FIXME: To prevent race condition with buf_pool.resize(),
-  we must acquire and hold the buffer pool mutex here. */
   ut_ad(!buf_pool.resize_in_progress());
 
-  auto *chunk= buf_pool.chunks;
-  for (auto i= buf_pool.n_chunks; i--; chunk++)
+  buf_block_t *block= buf_pool.block_from(data);
+  ut_ad(block);
+  ut_ad(block->page.state() == buf_page_t::MEMORY);
+  ut_ad(static_cast<uint16_t>(block->page.access_time - 1) < srv_page_size);
+  unsigned a= block->page.access_time;
+  ut_ad(a >= 1U << 16);
+  a-= 1U << 16;
+  block->page.access_time= a;
+  if (!(a >> 16))
   {
-    if (data < chunk->blocks->page.frame())
-      continue;
-    const size_t offs= (reinterpret_cast<const byte*>(data) -
-                        chunk->blocks->page.frame()) >> srv_page_size_shift;
-    buf_block_t *block= &chunk->blocks[offs];
-    if (block >= chunk->blocks_end)
-      continue;
-    ut_ad(block->page.frame() == data);
-    ut_ad(block->page.state() == buf_page_t::MEMORY);
-    ut_ad(static_cast<uint16_t>(block->page.access_time - 1) <
-          srv_page_size);
-    unsigned a= block->page.access_time;
-    ut_ad(a >= 1U << 16);
-    a-= 1U << 16;
-    block->page.access_time= a;
-    if (!(a >> 16))
-    {
-      UT_LIST_REMOVE(blocks, block);
-      MEM_MAKE_ADDRESSABLE(block->page.frame(), srv_page_size);
-      buf_block_free(block);
-    }
-    return;
+    UT_LIST_REMOVE(blocks, block);
+    MEM_MAKE_ADDRESSABLE(block->page.frame(), srv_page_size);
+    buf_block_free(block);
   }
-  ut_ad(0);
 }
 
 
