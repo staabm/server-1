@@ -289,15 +289,6 @@ void
 buf_block_modify_clock_inc(
 /*=======================*/
 	buf_block_t*	block);	/*!< in: block */
-/********************************************************************//**
-Returns the value of the modify clock. The caller must have an s-lock
-or x-lock on the block.
-@return value */
-UNIV_INLINE
-ib_uint64_t
-buf_block_get_modify_clock(
-/*=======================*/
-	buf_block_t*	block);	/*!< in: block */
 #endif /* !UNIV_INNOCHECKSUM */
 
 /** Check if a buffer is all zeroes.
@@ -1000,6 +991,12 @@ struct buf_block_t{
 #endif /* BTR_CUR_HASH_ADAPT */
   void fix() { page.fix(); }
   uint32_t unfix() { return page.unfix(); }
+
+  /** Try to re-fix the buffer page.
+  @param id  previous page identifier of the block
+  @return whether a buffer-fix was successfully acquired */
+  TRANSACTIONAL_TARGET
+  bool try_fix(const page_id_t id);
 
   /** @return the physical size, in bytes */
   ulint physical_size() const { return page.physical_size(); }

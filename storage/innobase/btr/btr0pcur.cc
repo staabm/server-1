@@ -176,10 +176,8 @@ before_first:
 						 cursor->old_n_fields,
 						 &cursor->old_rec_buf,
 						 &cursor->buf_size);
-	cursor->block_when_stored.store(block);
-
-	/* Function try to check if block is S/X latch. */
-	cursor->modify_clock = buf_block_get_modify_clock(block);
+	cursor->old_page_id = block->page.id();
+	cursor->modify_clock = block->modify_clock;
 }
 
 /**************************************************************//**
@@ -291,21 +289,19 @@ release_left_block:
   }
 }
 
-/** Structure acts as functor to do the latching of leaf pages.
-It returns true if latching of leaf pages succeeded and false
-otherwise. */
-struct optimistic_latch_leaves
+TRANSACTIONAL_TARGET
+bool buf_block_t::try_fix(const page_id_t id)
 {
-  btr_pcur_t *const cursor;
-  btr_latch_mode *const latch_mode;
-  mtr_t *const mtr;
-
-  bool operator()(buf_block_t *hint) const
-  {
-    return hint &&
-      btr_pcur_optimistic_latch_leaves(hint, cursor, latch_mode, mtr);
-  }
-};
+  if (page.id() != id || page.in_file())
+    return false;
+  auto &cell= buf_pool.page_hash.cell_get(id.fold());
+  transactional_shared_lock_guard<page_hash_latch> g
+    {buf_pool.page_hash.lock_get(cell)};
+  if (page.id() != id || page.in_file())
+    return false;
+  fix();
+  return true;
+}
 
 /** Restores the stored position of a persistent cursor bufferfixing
 the page and obtaining the specified latches. If the cursor position
@@ -328,6 +324,7 @@ btr_pcur_t::SAME_UNIQ cursor position is on user rec and points on the
 record with the same unique field values as in the stored record,
 btr_pcur_t::NOT_SAME cursor position is not on user rec or points on
 the record with not the samebuniq field values as in the stored */
+TRANSACTIONAL_TARGET
 btr_pcur_t::restore_status
 btr_pcur_t::restore_position(btr_latch_mode restore_latch_mode, mtr_t *mtr)
 {
@@ -358,7 +355,6 @@ btr_pcur_t::restore_position(btr_latch_mode restore_latch_mode, mtr_t *mtr)
 		latch_mode =
 			BTR_LATCH_MODE_WITHOUT_INTENTION(restore_latch_mode);
 		pos_state = BTR_PCUR_IS_POSITIONED;
-		block_when_stored.clear();
 
 		return restore_status::NOT_SAME;
 	}
@@ -375,9 +371,11 @@ btr_pcur_t::restore_position(btr_latch_mode restore_latch_mode, mtr_t *mtr)
 	case BTR_SEARCH_PREV:
 	case BTR_MODIFY_PREV:
 		/* Try optimistic restoration. */
-		if (block_when_stored.run_with_hint(
-			optimistic_latch_leaves{this, &restore_latch_mode,
-						mtr})) {
+		if (btr_cur.page_cur.block->try_fix(old_page_id)
+		    && btr_pcur_optimistic_latch_leaves(btr_cur.page_cur.block,
+							this,
+							&restore_latch_mode,
+							mtr)) {
 			pos_state = BTR_PCUR_IS_POSITIONED;
 			latch_mode = restore_latch_mode;
 
@@ -482,9 +480,8 @@ btr_pcur_t::restore_position(btr_latch_mode restore_latch_mode, mtr_t *mtr)
 			since the cursor can now be on a different page!
 			But we can retain the value of old_rec */
 
-			block_when_stored.store(btr_pcur_get_block(this));
-			modify_clock= buf_block_get_modify_clock(
-			    block_when_stored.block());
+			old_page_id = btr_cur.page_cur.block->page.id();
+			modify_clock = btr_cur.page_cur.block->modify_clock;
 
 			mem_heap_free(heap);
 
