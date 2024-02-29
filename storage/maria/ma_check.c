@@ -4336,6 +4336,13 @@ int maria_repair_parallel(HA_CHECK *param, register MARIA_HA *info,
     printf("Data records: %s\n", llstr(start_records, llbuff));
   }
 
+  /*
+    We cannot mark future memory allocations as thread specific when
+    doing parallel repair as we don't have a THD for each thread. Sharing the
+    same THD this would requre mutex locks around mallocs/reallocs to ensure
+    that two threads does not use the same THD at once.
+  */
+  param->malloc_flags= 0;
   bzero(&new_data_cache, sizeof(new_data_cache));
   if (initialize_variables_for_repair(param, &sort_info, &tmp_sort_param, info,
                                       rep_quick, &backup_share))
@@ -4587,13 +4594,6 @@ int maria_repair_parallel(HA_CHECK *param, register MARIA_HA *info,
   (void) pthread_attr_setdetachstate(&thr_attr,PTHREAD_CREATE_DETACHED);
   (void) my_setstacksize(&thr_attr, (size_t)my_thread_stack_size);
 
-  /*
-    We cannot mark future memory allocations as thread specific when
-    doing parallel repair as we don't have a THD for each thread. Sharing the
-    same THD this would requre mutex locks around mallocs/reallocs to ensure
-    that two threads does not use the same THD at once.
-  */
-  param->malloc_flags= 0;
   for (i=0 ; i < sort_info.total_keys ; i++)
   {
     /*
