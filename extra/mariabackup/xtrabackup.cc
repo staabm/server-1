@@ -371,8 +371,8 @@ static my_bool opt_check_privileges;
 
 extern const char *innodb_checksum_algorithm_names[];
 extern TYPELIB innodb_checksum_algorithm_typelib;
-extern const char *innodb_flush_method_names[];
 extern TYPELIB innodb_flush_method_typelib;
+extern TYPELIB innodb_data_file_write_through_typelib;
 /** Ignored option */
 static ulong innodb_flush_method;
 
@@ -1697,7 +1697,8 @@ struct my_option xb_server_options[] =
   {"innodb_data_file_write_through", OPT_INNODB_DATA_FILE_WRITE_THROUGH,
    "Whether each write to data files writes through",
    (G_PTR*) &fil_system.write_through,
-   (G_PTR*) &fil_system.write_through, 0, GET_BOOL, NO_ARG,
+   (G_PTR*) &fil_system.write_through,
+   &innodb_checksum_algorithm_typelib, GET_ENUM, NO_ARG,
    FALSE, 0, 0, 0, 0, 0},
   {"innodb_log_file_size", OPT_INNODB_LOG_FILE_SIZE,
    "Ignored for mysqld option compatibility",

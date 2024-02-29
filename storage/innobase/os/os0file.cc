@@ -983,7 +983,7 @@ os_file_create_simple_func(
 		}
 	}
 
-	if (fil_system.is_write_through()) create_flag |= O_DSYNC;
+	if (fil_system.is_write_through() & 1) create_flag |= O_DSYNC;
 #ifdef O_DIRECT
 	int direct_flag = fil_system.is_buffered() ? 0 : O_DIRECT;
 #else
@@ -1204,7 +1204,7 @@ os_file_create_func(
 	if (read_only) {
 	} else if (type == OS_LOG_FILE
 		   ? log_sys.log_write_through
-		   : fil_system.is_write_through()) {
+		   : fil_system.is_write_through() & 1) {
 		create_flag |= O_DSYNC;
 	}
 
@@ -1874,7 +1874,7 @@ os_file_create_simple_func(
 		access = GENERIC_READ | GENERIC_WRITE;
 	}
 
-	if (fil_system.is_write_through())
+	if (fil_system.is_write_through() & 1)
 		attributes |= FILE_FLAG_WRITE_THROUGH;
 	if (!fil_system.is_buffered())
 		attributes |= FILE_FLAG_NO_BUFFERING;
@@ -2022,7 +2022,7 @@ os_file_create_func(
 	} else {
 		if (type == OS_DATA_FILE && !fil_system.is_buffered())
 			attributes|= FILE_FLAG_NO_BUFFERING;
-		if (fil_system.is_write_through())
+		if (fil_system.is_write_through() & 1)
 			attributes|= FILE_FLAG_WRITE_THROUGH;
 	}
 

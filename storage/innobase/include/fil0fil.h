@@ -1404,17 +1404,18 @@ public:
   /** Map of fil_space_t::id to fil_space_t* */
   hash_table_t spaces;
 
-  /** whether each write to data files is durable (O_DSYNC) */
-  my_bool write_through;
+  /** 0=invoke fsync() or fdatasync() on data files before checkpoint;
+  1=each write is durable (O_DSYNC); 2=writes are not durable (NO_FSYNC) */
+  ulong write_through;
   /** whether data files are buffered (not O_DIRECT) */
   my_bool buffered;
 
   /** Try to enable or disable write-through of data files */
-  void set_write_through(bool write_through);
+  void set_write_through(ulong write_through);
   /** Try to enable or disable file system caching of data files */
   void set_buffered(bool buffered);
 
-  TPOOL_SUPPRESS_TSAN bool is_write_through() const { return write_through; }
+  TPOOL_SUPPRESS_TSAN ulong is_write_through() const { return write_through; }
   TPOOL_SUPPRESS_TSAN bool is_buffered() const { return buffered; }
 
   /** tablespaces for which fil_space_t::needs_flush() holds */

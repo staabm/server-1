@@ -1458,15 +1458,15 @@ ATTRIBUTE_COLD void fil_space_t::reopen_all()
   fil_system.freeze_space_list--;
 }
 
-void fil_system_t::set_write_through(bool write_through)
+void fil_system_t::set_write_through(ulong write_through)
 {
+  ut_ad(write_through <= 2);
   mysql_mutex_lock(&mutex);
+  const auto was_write_through= this->write_through;
+  this->write_through= write_through;
 
-  if (write_through != is_write_through())
-  {
-    this->write_through= write_through;
+  if ((was_write_through ^ write_through) & 1)
     fil_space_t::reopen_all();
-  }
 
   mysql_mutex_unlock(&mutex);
 }

@@ -352,7 +352,7 @@ static TYPELIB innodb_default_row_format_typelib = {
 };
 
 /** Names of allowed values of innodb_flush_method */
-const char* innodb_flush_method_names[] = {
+static const char* innodb_flush_method_names[] = {
 	"fsync",
 	"O_DSYNC",
 	"littlesync",
@@ -379,6 +379,18 @@ TYPELIB innodb_flush_method_typelib = {
 
 /** Deprecated parameter */
 static ulong innodb_flush_method;
+
+/** Names of allowed values of innodb_data_file_write_through */
+static const char *innodb_data_file_write_through_names[]=
+{"OFF", "ON", "NO_FSYNC", nullptr};
+
+/** Enumeration of innodb_data_file_write_through */
+TYPELIB innodb_data_file_write_through_typelib= {
+  array_elements(innodb_data_file_write_through_names) - 1,
+  "innodb_data_file_write_through_typelib",
+  innodb_data_file_write_through_names,
+  nullptr
+};
 
 /** Names of allowed values of innodb_deadlock_report */
 static const char *innodb_deadlock_report_names[]= {
@@ -3973,6 +3985,9 @@ static int innodb_init_params()
 	} else if (innodb_flush_method >= 4 /* O_DIRECT */
 		   IF_WIN(&& innodb_flush_method < 8 /* normal */,)) {
 		/* O_DIRECT and similar settings do nothing */
+		if (innodb_flush_method == 5 /* O_DIRECT_NO_FSYNC */) {
+			fil_system.write_through = 2;
+		}
 #ifdef O_DIRECT
 	} else if (srv_use_atomic_writes && my_may_have_atomic_write) {
 		/* If atomic writes are enabled, do the same as with
@@ -19317,10 +19332,13 @@ static MYSQL_SYSVAR_BOOL(data_file_buffering, fil_system.buffered,
   "Whether the file system cache for data files is enabled",
   nullptr, innodb_data_file_buffering_update, FALSE);
 
-static MYSQL_SYSVAR_BOOL(data_file_write_through, fil_system.write_through,
+static MYSQL_SYSVAR_ENUM(data_file_write_through, fil_system.write_through,
   PLUGIN_VAR_OPCMDARG,
-  "Whether each write to data files writes through",
-  nullptr, innodb_data_file_write_through_update, FALSE);
+  "OFF=On checkpoint, writes to data files will be persisted; "
+  "ON=each write to data files writes through; "
+  "NO_FSYNC=writes to data files do not write through",
+  nullptr, innodb_data_file_write_through_update, false,
+  &innodb_data_file_write_through_typelib);
 
 static MYSQL_SYSVAR_ULONGLONG(log_file_size, srv_log_file_size,
   PLUGIN_VAR_RQCMDARG,
