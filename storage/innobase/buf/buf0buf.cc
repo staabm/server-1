@@ -773,14 +773,8 @@ buf_madvise_do_dump()
 		ret+= madvise(recv_sys.buf, recv_sys.len, MADV_DODUMP);
 	}
 
-	mysql_mutex_lock(&buf_pool.mutex);
-	auto chunk = buf_pool.chunks;
-
-	for (ulint n = buf_pool.n_chunks; n--; chunk++) {
-		ret+= madvise(chunk->mem, chunk->mem_size(), MADV_DODUMP);
-	}
-
-	mysql_mutex_unlock(&buf_pool.mutex);
+	ret+= madvise(const_cast<buf_block_t*>(buf_pool.first_block()),
+		      buf_pool.curr_pool_size(), MADV_DODUMP);
 	return ret;
 }
 #endif
@@ -835,85 +829,6 @@ byte *buf_page_t::frame() const
   return nullptr;
 }
 
-#if 0
-/** Allocate a chunk of buffer frames.
-@param bytes    requested size
-@return whether the allocation succeeded */
-inline bool buf_pool_t::chunk_t::create(size_t bytes)
-{
-  DBUG_EXECUTE_IF("ib_buf_chunk_init_fails", return false;);
-  /* Round down to a multiple of page size, although it already should be. */
-  bytes= ut_2pow_round<size_t>(bytes, srv_page_size);
-
-  mem= buf_pool.allocator.allocate_large_dontdump(bytes, &mem_pfx);
-
-  if (UNIV_UNLIKELY(!mem))
-    return false;
-
-#ifdef HAVE_LIBNUMA
-  if (srv_numa_interleave)
-  {
-    struct bitmask *numa_mems_allowed= numa_get_mems_allowed();
-    if (mbind(mem, mem_size(), MPOL_INTERLEAVE,
-              numa_mems_allowed->maskp, numa_mems_allowed->size,
-              MPOL_MF_MOVE))
-      sql_print_warning("InnoDB: Failed to set NUMA memory policy of"
-                        " buffer pool page frames to MPOL_INTERLEAVE"
-                        " (error: %s).", strerror(errno));
-    numa_bitmask_free(numa_mems_allowed);
-  }
-#endif /* HAVE_LIBNUMA */
-
-  MEM_UNDEFINED(mem, mem_size());
-
-  /* Allocate the block descriptors from
-  the start of the memory block. */
-  blocks= reinterpret_cast<buf_block_t*>(mem);
-
-  /* Align a pointer to the first frame.  Note that when
-  opt_large_page_size is smaller than srv_page_size,
-  (with max srv_page_size at 64k don't think any hardware
-  makes this true),
-  we may allocate one fewer block than requested.  When
-  it is bigger, we may allocate more blocks than requested. */
-  static_assert(sizeof(byte*) == sizeof(ulint), "pointer size");
-
-  byte *frame= reinterpret_cast<byte*>((reinterpret_cast<ulint>(mem) +
-                                        srv_page_size - 1) &
-                                       ~ulint{srv_page_size - 1});
-  size= (mem_pfx.m_size >> srv_page_size_shift) - (frame != mem);
-
-  /* Subtract the space needed for block descriptors. */
-  {
-    ulint s= size;
-
-    while (frame < reinterpret_cast<const byte*>(blocks + s))
-    {
-      frame+= srv_page_size;
-      s--;
-    }
-
-    size= s;
-  }
-
-  first_frame= frame;
-  MEM_NOACCESS(frame, mem_size() - (frame - mem));
-
-  /* The remaining blocks beyond the first one will be lazily
-  initialized in buf_pool_t::lazy_allocate(). */
-  n_blocks= 1;
-
-  MEM_MAKE_DEFINED(blocks, sizeof *blocks);
-  ut_ad(!memcmp(blocks, field_ref_zero, sizeof *blocks));
-
-  blocks->page.lock.init();
-  UT_LIST_ADD_LAST(buf_pool.free, &blocks->page);
-  ut_d(blocks->page.in_free_list= true);
-
-  return true;
-}
-#endif
-
 /** Lazily initialize a block if one is available.
 @return freshly initialized buffer block
 @retval if all of the buffer pool has been initialized */
@@ -959,8 +874,6 @@ bool buf_pool_t::create()
   allocated before innodb initialization */
   ut_ad(srv_operation >= SRV_OPERATION_RESTORE || !field_ref_zero);
 
-  NUMA_MEMPOLICY_INTERLEAVE_IN_SCOPE;
-
   if (!field_ref_zero)
   {
     if (auto b= aligned_malloc(UNIV_PAGE_SIZE_MAX, 4096))
@@ -982,8 +895,11 @@ bool buf_pool_t::create()
 
   size_t size= size_in_bytes_requested; // FIXME: size_in_bytes_max
 
-  // FIXME: Windows: no MEM_COMMIT | MEM_RESERVE
-  blocks= reinterpret_cast<buf_block_t*>(my_large_malloc(&size, MYF(0)));
+  {
+    NUMA_MEMPOLICY_INTERLEAVE_IN_SCOPE;
+    // FIXME: Windows: no MEM_COMMIT | MEM_RESERVE
+    blocks= reinterpret_cast<buf_block_t*>(my_large_malloc(&size, MYF(0)));
+  }
 
   if (!blocks)
     goto oom;
