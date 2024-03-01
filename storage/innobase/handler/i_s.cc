@@ -4120,77 +4120,27 @@ and fetch information to information schema tables: INNODB_BUFFER_PAGE.
 @return 0 on success, 1 on failure */
 static int i_s_innodb_buffer_page_fill(THD *thd, TABLE_LIST *tables, Item *)
 {
-	int			status	= 0;
-	mem_heap_t*		heap;
+  DBUG_ENTER("i_s_innodb_buffer_page_fill");
+  RETURN_IF_INNODB_NOT_STARTED(tables->schema_table_name.str);
 
-	DBUG_ENTER("i_s_innodb_buffer_page_fill");
+  /* deny access to user without PROCESS privilege */
+  if (check_global_access(thd, PROCESS_ACL))
+    DBUG_RETURN(0);
 
-	RETURN_IF_INNODB_NOT_STARTED(tables->schema_table_name.str);
+  mysql_mutex_lock(&buf_pool.mutex);
+  /* we return at most MAX_BUF_INFO_CACHED rows */
+  size_t n= std::min<size_t>(buf_pool.get_n_pages(), MAX_BUF_INFO_CACHED);
+  buf_page_info_t *b= static_cast<buf_page_info_t*>(calloc(n, sizeof *b));
 
-	/* deny access to user without PROCESS privilege */
-	if (check_global_access(thd, PROCESS_ACL)) {
-		DBUG_RETURN(0);
-	}
+  for (size_t i= 0; i < n; i++)
+    i_s_innodb_buffer_page_get_info(&buf_pool.get_nth_page(i)->page, i, &b[i]);
 
-	heap = mem_heap_create(10000);
+  mysql_mutex_unlock(&buf_pool.mutex);
+  int status= i_s_innodb_buffer_page_fill(thd, tables, b, n);
+  // FIXME: multiple iterations
 
-	const buf_block_t*	block = buf_pool.first_block();
-	buf_page_info_t*	info_buffer;
-	ulint			num_page;
-	ulint			mem_size;
-	ulint			num_to_process;
-	ulint			block_id = 0;
-
-	num_page = 0;
-
-	for (size_t size = buf_pool.get_n_pages(); size; ) {
-		/* we cache maximum MAX_BUF_INFO_CACHED number of
-		buffer page info */
-		num_to_process = ut_min(size, (ulint)MAX_BUF_INFO_CACHED);
-		mem_size = num_to_process * sizeof(buf_page_info_t);
-
-		/* For each chunk, we'll pre-allocate information
-		structures to cache the page information read from
-		the buffer pool. Doing so before obtain any mutex */
-		info_buffer = (buf_page_info_t*)
-			mem_heap_zalloc(heap, mem_size);
-
-		/* Obtain appropriate mutexes. Since this is diagnostic
-		buffer pool info printout, we are not required to
-		preserve the overall consistency, so we can
-		release mutex periodically */
-		mysql_mutex_lock(&buf_pool.mutex);
-
-		/* GO through each block in the chunk */
-		for (size_t n_blocks = num_to_process; n_blocks--; block++) {
-			i_s_innodb_buffer_page_get_info(
-				&block->page, block_id,
-				info_buffer + num_page);
-			block_id++;
-			num_page++;
-		}
-
-		mysql_mutex_unlock(&buf_pool.mutex);
-
-		/* Fill in information schema table with information
-		just collected from the buffer chunk scan */
-		status = i_s_innodb_buffer_page_fill(
-			thd, tables, info_buffer,
-			num_page);
-
-		/* If something goes wrong, break and return */
-		if (status) {
-			break;
-		}
-
-		mem_heap_empty(heap);
-		size -= num_to_process;
-		num_page = 0;
-	}
-
-	mem_heap_free(heap);
-
-	DBUG_RETURN(status);
+  free(b);
+  DBUG_RETURN(status);
 }
 
 /*******************************************************************//**

@@ -1122,7 +1122,8 @@ static bool buf_LRU_block_remove_hashed(buf_page_t *bpage, const page_id_t id,
 
 	buf_pool.freed_page_clock += 1;
 
-	page_t *page = bpage->frame();
+	page_t *page = buf_pool.is_uncompressed(bpage)
+		? bpage->frame() : nullptr;
 
 	if (UNIV_LIKELY(!bpage->zip.data)) {
 		MEM_CHECK_ADDRESSABLE(bpage, sizeof(buf_block_t));
@@ -1398,10 +1399,10 @@ void buf_LRU_validate()
 	     bpage != NULL;
              bpage = UT_LIST_GET_NEXT(LRU, bpage)) {
 		ut_ad(bpage->in_file());
-		ut_ad(!bpage->frame()
+		ut_ad(!buf_pool.is_uncompressed(bpage)
 		      || reinterpret_cast<buf_block_t*>(bpage)
 		      ->in_unzip_LRU_list
-		      == bpage->belongs_to_unzip_LRU());
+		      == !!bpage->zip.data);
 
 		if (bpage->is_old()) {
 			const buf_page_t*	prev

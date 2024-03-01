@@ -372,7 +372,7 @@ buf_read_ahead_random(const page_id_t page_id, ulint zip_size, bool ibuf)
     return 0;
 
   if (os_aio_pending_reads_approx() >
-      buf_pool.get_n_pages() / BUF_READ_AHEAD_PEND_LIMIT)
+      buf_pool.curr_size() / BUF_READ_AHEAD_PEND_LIMIT)
     return 0;
 
   fil_space_t* space= fil_space_t::get(page_id.space());
@@ -593,9 +593,8 @@ failed:
       on the page, we do not acquire an s-latch on the page, this is to
       prevent deadlocks. The hash_lock is only protecting the
       buf_pool.page_hash for page i, not the bpage contents itself. */
-      const byte *f= bpage->frame();
-      if (UNIV_UNLIKELY(!f))
-        f= bpage->zip.data;
+      const byte *f= UNIV_LIKELY(buf_pool.is_uncompressed(bpage))
+        ? bpage->frame() : bpage->zip.data;
       uint32_t prev= mach_read_from_4(my_assume_aligned<4>(f + FIL_PAGE_PREV));
       uint32_t next= mach_read_from_4(my_assume_aligned<4>(f + FIL_PAGE_NEXT));
       hash_lock.unlock_shared();

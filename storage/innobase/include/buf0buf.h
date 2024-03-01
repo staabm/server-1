@@ -41,6 +41,10 @@ Created 11/5/1995 Heikki Tuuri
 #include "transactional_lock_guard.h"
 #include <ostream>
 
+/** The allocation granularity of innodb_buffer_pool_size */
+constexpr size_t innodb_buffer_pool_extent_size=
+  sizeof(size_t) < 8 ? 2 << 20 : 8 << 20;
+
 /** @name Modes for buf_page_get_gen */
 /* @{ */
 #define BUF_GET			10	/*!< get always */
@@ -661,8 +665,7 @@ public:
   bool is_read_fixed() const { return is_io_fixed() && !is_write_fixed(); }
 
   /** @return if this belongs to buf_pool.unzip_LRU */
-  bool belongs_to_unzip_LRU() const
-  { return UNIV_LIKELY_NULL(zip.data) && frame(); }
+  inline bool belongs_to_unzip_LRU() const;
 
   bool is_freed() const
   { const auto s= state(); ut_ad(s >= FREED); return s < UNFIXED; }
@@ -1185,15 +1188,18 @@ struct buf_buddy_stat_t {
 /** The buffer pool */
 class buf_pool_t
 {
-  /** first array of buffer control blocks */
-  alignas(CPU_LEVEL1_DCACHE_LINESIZE) buf_block_t *blocks;
+  /** arrays of buf_block_t followed by page frames;
+  aliged to and repeating every innodb_buffer_pool_extent_size;
+  each extent comprises pages_in_extent[] blocks */
+  alignas(CPU_LEVEL1_DCACHE_LINESIZE) byte *memory;
+private:
 #ifdef UNIV_PFS_MEMORY
   /** the "owner thread" of the buffer pool allocation */
   PSI_thread *owner;
 #endif
-  /** initialized size of blocks[] */
+  /** initialized number of block descriptors */
   size_t n_blocks;
-  /** allocated size of blocks[] */
+  /** allocated number of block descriptors */
   size_t n_blocks_alloc;
 
   /** amount of memory allocated to the buffer pool and descriptors */
@@ -1208,13 +1214,22 @@ public:
   /** @return the current size of the buffer pool, in bytes */
   size_t curr_pool_size() const { return size_in_bytes; }
 
-  /** @return the first buffer block */
-  const buf_block_t *first_block() const { return blocks; }
-
-  /** @return the current initialized size in blocks */
+  /** @return the current initialized number of block descriptors */
   size_t get_n_pages() const { return n_blocks; }
   /** @return the current size of the buffer pool, in pages */
   size_t curr_size() const { return n_blocks_alloc; }
+
+#if defined(DBUG_OFF) && defined(HAVE_MADVISE) && defined(MADV_DODUMP)
+  /** Enable buffers to be dumped to core files.
+
+  A convenience function, not called anyhwere directly however
+  it is left available for gdb or any debugger to call
+  in the event that you want all of the memory to be dumped
+  to a core file.
+
+  @return number of errors found in madvise() calls */
+  static int madvise_do_dump();
+#endif
 
   /** Hash cell chain in page_hash_table */
   struct hash_chain
@@ -1233,7 +1248,7 @@ private:
   inline bool realloc(buf_block_t *block);
 
 public:
-  bool is_initialised() const { return blocks != nullptr; }
+  bool is_initialised() const { return memory != nullptr; }
 
   /** Create the buffer pool.
   @return whether the creation failed */
@@ -1282,21 +1297,14 @@ public:
   @param data  pointer to the start of a ROW_FORMAT=COMPRESSED page frame
   @return the block
   @retval nullptr  if not found */
-  const buf_block_t *contains_zip(const void *data) const
-  {
-    for (size_t i= 0; i < n_blocks; i++)
-      if (blocks[i].page.zip.data == data)
-        return &blocks[i];
-    return nullptr;
-  }
-
+  const buf_block_t *contains_zip(const void *data) const;
   /** Assert that all buffer pool pages are in a replaceable state */
   void assert_all_freed();
 #endif /* UNIV_DEBUG */
 
 #ifdef BTR_CUR_HASH_ADAPT
   /** Clear the adaptive hash index on all pages in the buffer pool. */
-  inline void clear_hash_index();
+  ATTRIBUTE_COLD void clear_hash_index();
 #endif /* BTR_CUR_HASH_ADAPT */
 
   /**
@@ -1323,7 +1331,12 @@ public:
   @param ptr   address within a page frame
   @return the block descriptor
   @retval nullptr  if there is no block corresponding to the page frame */
-  buf_block_t *block_from(const void *ptr) const;
+  static buf_block_t *block_from(const void *ptr);
+
+  /** Access a block while holding the buffer pool mutex.
+  @param pos    position between 0 and get_n_pages()
+  @return the block descriptor */
+  buf_block_t *get_nth_page(size_t pos) const;
 
   /** Determine if a buffer block was created by create(),
   disregarding blocks that are subject to withdrawal in resize().
@@ -1331,8 +1344,10 @@ public:
   @return whether block has been created by create() */
   bool is_uncompressed(const buf_block_t *block) const
   {
-    return (block - blocks) >= 0 && size_t(block - blocks) < n_blocks;
+    const ptrdiff_t d= reinterpret_cast<const byte*>(block) - memory;
+    return d >= 0 && size_t(d) < size_in_bytes_max;
   }
+
   bool is_uncompressed(const buf_page_t *bpage) const
   {
     return is_uncompressed(reinterpret_cast<const buf_block_t*>(bpage));
@@ -1829,6 +1844,9 @@ private:
 
 /** The InnoDB buffer pool */
 extern buf_pool_t buf_pool;
+
+inline bool buf_page_t::belongs_to_unzip_LRU() const
+{ return UNIV_LIKELY_NULL(zip.data) && buf_pool.is_uncompressed(this); }
 
 inline buf_page_t *buf_pool_t::page_hash_table::get(const page_id_t id,
                                                     const hash_chain &chain)

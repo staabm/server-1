@@ -985,6 +985,7 @@ srv_export_innodb_status(void)
 	export_vars.innodb_buffer_pool_write_requests =
 		srv_stats.buf_pool_write_requests;
 
+	mysql_mutex_lock(&buf_pool.mutex);
 	export_vars.innodb_buffer_pool_bytes_data =
 		buf_pool.stat.LRU_bytes
 		+ (UT_LIST_GET_LEN(buf_pool.unzip_LRU)
@@ -994,12 +995,13 @@ srv_export_innodb_status(void)
 	export_vars.innodb_buffer_pool_pages_latched =
 		buf_get_latched_pages_number();
 #endif /* UNIV_DEBUG */
-	export_vars.innodb_buffer_pool_pages_total = buf_pool.get_n_pages();
+	export_vars.innodb_buffer_pool_pages_total = buf_pool.curr_size();
 
 	export_vars.innodb_buffer_pool_pages_misc =
 		buf_pool.get_n_pages()
 		- UT_LIST_GET_LEN(buf_pool.LRU)
 		- UT_LIST_GET_LEN(buf_pool.free);
+	mysql_mutex_unlock(&buf_pool.mutex);
 
 	export_vars.innodb_max_trx_id = trx_sys.get_max_trx_id();
 	export_vars.innodb_history_list_length = trx_sys.history_size_approx();

@@ -3745,14 +3745,12 @@ static MYSQL_SYSVAR_SIZE_T(buffer_pool_size, *reinterpret_cast<size_t*>
   "The size of the memory buffer InnoDB uses to cache data and indexes of its tables.",
   innodb_buffer_pool_size_validate,
   innodb_buffer_pool_size_update,
-  128U << 20,
-  2U << 20,
-  SIZE_T_MAX, 1024*1024L);
+  128U << 20, 2U << 20, SIZE_T_MAX, innodb_buffer_pool_extent_size);
 
 static MYSQL_SYSVAR_SIZE_T(buffer_pool_size_max, buf_pool.size_in_bytes_max,
   PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
   "Maximum innodb_buffer_pool_size",
-  nullptr, nullptr, 0, 0, SIZE_T_MAX, 1U << 20);
+  nullptr, nullptr, 0, 0, SIZE_T_MAX, innodb_buffer_pool_extent_size);
 
 /****************************************************************//**
 Gives the file extension of an InnoDB single-table tablespace. */

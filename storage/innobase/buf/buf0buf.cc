@@ -275,6 +275,95 @@ the read requests for the whole area.
 */
 
 #ifndef UNIV_INNOCHECKSUM
+/** Recursively compute the number of frames needed for buf_block_t, per extent
+@param extent  extent size, in pages
+@param ps      innodb_page_size
+@param b       upper bound for the return value
+@return number of buf_block_t frames per extent */
+static constexpr size_t compute_overhead(size_t extent, size_t ps, size_t b)
+{
+  return ((ps * b - (extent - b) * sizeof(buf_block_t)) > ps)
+    ? compute_overhead(extent, ps, b - 1)
+    : b;
+}
+
+/** Saturating conversion */
+static constexpr uint16_t scast16(size_t x)
+{
+  return uint16_t(((-(x >> 16)) | (x << 16)) >> 16);
+}
+
+/** Saturating conversion */
+static constexpr uint8_t scast8(uint16_t x)
+{
+  return uint8_t(((-(x >> 8)) | (x << 8)) >> 8);
+}
+/** Saturating conversion */
+static constexpr uint8_t scast8(size_t x) { return scast8(scast16(x)); }
+
+/** Compute the number of page frames needed for buf_block_t,
+per innodb_buffer_pool_extent_size.
+@param ps      innodb_page_size
+@return number of buf_block_t frames per extent */
+static constexpr uint8_t first_page(size_t ps)
+{
+  return scast8(compute_overhead(innodb_buffer_pool_extent_size / ps, ps,
+                                 (innodb_buffer_pool_extent_size / ps *
+                                  sizeof(buf_block_t) + (ps - 1)) / ps));
+}
+
+/** Compute the number of bytes needed for buf_block_t,
+per innodb_buffer_pool_extent_size.
+@param ps      innodb_page_size
+@return number of buf_block_t frames per extent */
+static constexpr size_t first_frame(size_t ps)
+{
+  return first_page(ps) * ps;
+}
+
+/** Compute the number of pages per innodb_buffer_pool_extent_size.
+@param ps      innodb_page_size
+@return number of buf_block_t frames per extent */
+static constexpr uint16_t pages(size_t ps)
+{
+  return scast16(innodb_buffer_pool_extent_size / ps - first_page(ps));
+}
+
+/** The byte offset of the first page frame in a buffer pool extent
+of innodb_buffer_pool_extent_size bytes */
+static constexpr size_t first_frame_in_extent[]=
+{
+  first_frame(4096), first_frame(8192), first_frame(16384),
+  first_frame(32768), first_frame(65536)
+};
+
+/** The position offset of the first page frame in a buffer pool extent
+of innodb_buffer_pool_extent_size bytes */
+static constexpr uint8_t first_page_in_extent[]=
+{
+  first_page(4096), first_page(8192), first_page(16384),
+  first_page(32768), first_page(65536)
+};
+
+static_assert(first_page_in_extent[0] < 255, "");
+static_assert(first_page_in_extent[1] < 255, "");
+static_assert(first_page_in_extent[2] < 255, "");
+static_assert(first_page_in_extent[3] < 255, "");
+static_assert(first_page_in_extent[4] < 255, "");
+
+/** Number of pages per buffer pool extent
+of innodb_buffer_pool_extent_size bytes */
+static constexpr size_t pages_in_extent[]=
+{
+  pages(4096), pages(8192), pages(16384), pages(32768), pages(65536)
+};
+
+static_assert(pages_in_extent[0] < 65535, "");
+static_assert(pages_in_extent[1] < 65535, "");
+static_assert(pages_in_extent[2] < 65535, "");
+static_assert(pages_in_extent[3] < 65535, "");
+static_assert(pages_in_extent[4] < 65535, "");
+
 # ifdef SUX_LOCK_GENERIC
 void page_hash_latch::read_lock_wait()
 {
@@ -744,17 +833,16 @@ buf_page_is_corrupted(
 #ifndef UNIV_INNOCHECKSUM
 
 #if defined(DBUG_OFF) && defined(HAVE_MADVISE) &&  defined(MADV_DODUMP)
-/** Enable buffers to be dumped to core files
+/** Enable buffers to be dumped to core files.
 
-A convience function, not called anyhwere directly however
+A convenience function, not called anyhwere directly however
 it is left available for gdb or any debugger to call
 in the event that you want all of the memory to be dumped
 to a core file.
 
-Returns number of errors found in madvise calls. */
+@return number of errors found in madvise() calls */
 MY_ATTRIBUTE((used))
-int
-buf_madvise_do_dump()
+int buf_pool_t::madvise_do_dump()
 {
 	int ret= 0;
 
@@ -773,7 +861,7 @@ buf_madvise_do_dump()
 		ret+= madvise(recv_sys.buf, recv_sys.len, MADV_DODUMP);
 	}
 
-	ret+= madvise(const_cast<buf_block_t*>(buf_pool.first_block()),
+	ret+= madvise(const_cast<buf_block_t*>(buf_pool.block()),
 		      buf_pool.curr_pool_size(), MADV_DODUMP);
 	return ret;
 }
@@ -816,18 +904,60 @@ void buf_page_print(const byte *read_buf, ulint zip_size)
 #endif
 }
 
-static byte *first_frame;
-
 byte *buf_page_t::frame() const
 {
-  ptrdiff_t d= reinterpret_cast<const buf_block_t*>(this) -
-    buf_pool.first_block();
+  static_assert(ut_is_2pow(innodb_buffer_pool_extent_size), "");
+  ut_ad(buf_pool.is_uncompressed(this));
 
-  if (d >= 0 && size_t(d) < buf_pool.curr_size())
-    return first_frame + srv_page_size * d;
+  byte *first_frame= reinterpret_cast<byte*>
+    ((reinterpret_cast<size_t>(this) & ~(innodb_buffer_pool_extent_size - 1)) |
+     first_frame_in_extent[srv_page_size_shift - UNIV_PAGE_SIZE_SHIFT_MIN]);
+  ut_ad(reinterpret_cast<const byte*>(this) + sizeof(buf_block_t) <=
+        first_frame);
+  return first_frame +
+    (((reinterpret_cast<size_t>(this) & (innodb_buffer_pool_extent_size - 1)) /
+      sizeof(buf_block_t)) << srv_page_size_shift);
+}
 
+buf_block_t *buf_pool_t::block_from(const void *ptr)
+{
+  static_assert(ut_is_2pow(innodb_buffer_pool_extent_size), "");
+  ut_ad(static_cast<const byte*>(ptr) >= buf_pool.memory);
+
+  byte *first_block= reinterpret_cast<byte*>
+    (reinterpret_cast<size_t>(ptr) & ~(innodb_buffer_pool_extent_size - 1));
+  const size_t first_frame=
+    first_frame_in_extent[srv_page_size_shift - UNIV_PAGE_SIZE_SHIFT_MIN];
+
+  ut_ad(static_cast<const byte*>(ptr) >= first_block + first_frame);
+
+  return reinterpret_cast<buf_block_t*>(first_block) +
+    (((size_t(ptr) & (innodb_buffer_pool_extent_size - 1)) - first_frame) >>
+     srv_page_size_shift);
+}
+
+buf_block_t *buf_pool_t::get_nth_page(size_t pos) const
+{
+  mysql_mutex_assert_owner(&mutex);
+  ut_ad(pos < n_blocks);
+  const size_t pages=
+    pages_in_extent[srv_page_size_shift - UNIV_PAGE_SIZE_SHIFT_MIN];
+  return reinterpret_cast<buf_block_t*>
+    (memory + innodb_buffer_pool_extent_size * (pos / pages)) + (pos % pages);
+}
+
+#ifdef UNIV_DEBUG
+const buf_block_t *buf_pool_t::contains_zip(const void *data) const
+{
+  for (size_t i= 0; i < n_blocks; i++)
+  {
+    const buf_block_t *block= get_nth_page(i);
+    if (block->page.zip.data == data)
+      return block;
+  }
   return nullptr;
 }
+#endif
 
 /** Lazily initialize a block if one is available.
 @return freshly initialized buffer block
@@ -838,7 +968,8 @@ buf_block_t *buf_pool_t::lazy_allocate()
 
   if (n_blocks < n_blocks_alloc)
   {
-    buf_block_t *block= &blocks[n_blocks++];
+    const size_t n= n_blocks++;
+    buf_block_t *block= get_nth_page(n);
     MEM_MAKE_DEFINED(block, sizeof *block);
     ut_ad(!memcmp(block, field_ref_zero, sizeof *block));
     block->page.lock.init();
@@ -861,6 +992,11 @@ void buf_pool_t::page_hash_table::create(ulint n)
   memset_aligned<CPU_LEVEL1_DCACHE_LINESIZE>(v, 0, size);
   array= static_cast<hash_chain*>(v);
 }
+
+#if 1 // FIXME: remove this
+/** actual allocation of the buf_pool.memory */
+static byte *mem; size_t mem_size;
+#endif
 
 /** Create the buffer pool.
 @return whether the creation failed */
@@ -891,20 +1027,32 @@ bool buf_pool_t::create()
 
  init:
   sql_print_information("InnoDB: Initializing buffer pool, total size = %zu",
-                        size_in_bytes_requested);
+                        size_t{size_in_bytes_requested});
 
   size_t size= size_in_bytes_requested; // FIXME: size_in_bytes_max
 
   {
+#if 1 // FIXME: pass the alignment to my_large_malloc()
+    size+= innodb_buffer_pool_extent_size;
+#endif
     NUMA_MEMPOLICY_INTERLEAVE_IN_SCOPE;
     // FIXME: Windows: no MEM_COMMIT | MEM_RESERVE
-    blocks= reinterpret_cast<buf_block_t*>(my_large_malloc(&size, MYF(0)));
+    mem= my_large_malloc(&size, MYF(0));
+    mem_size= size;
   }
 
-  if (!blocks)
+  if (!mem)
     goto oom;
 
-  ut_dontdump(blocks, size, true);
+#if 1 // FIXME: pass the alignment to my_large_malloc()
+  // Align the allocation to a multiple of innodb_buffer_pool_extent_size.
+  memory= reinterpret_cast<byte*>
+    (ut_calc_align(size_t(mem), size_t{innodb_buffer_pool_extent_size}));
+  size-= memory - static_cast<byte*>(mem);
+  size&= ~(innodb_buffer_pool_extent_size - 1);
+#endif
+
+  ut_dontdump(memory, size, true);
   os_total_large_mem_allocated+= size;
 
   size_in_bytes_requested= size;
@@ -918,7 +1066,7 @@ bool buf_pool_t::create()
   if (srv_numa_interleave)
   {
     struct bitmask *numa_mems_allowed= numa_get_mems_allowed();
-    if (mbind(blocks, size, MPOL_INTERLEAVE,
+    if (mbind(memory, size, MPOL_INTERLEAVE,
               numa_mems_allowed->maskp, numa_mems_allowed->size,
               MPOL_MF_MOVE))
       sql_print_warning("InnoDB: Failed to set NUMA memory policy of"
@@ -928,34 +1076,29 @@ bool buf_pool_t::create()
   }
 #endif /* HAVE_LIBNUMA */
 
-  MEM_UNDEFINED(blocks, size);
+  MEM_UNDEFINED(memory, size);
 
-  // Round the allocation to a multiple of innodb_page_size.
-  // FIXME: do this already for blocks
-  first_frame= reinterpret_cast<byte*>((reinterpret_cast<ulint>(blocks) +
-                                        srv_page_size - 1) &
-                                       ~ulint{srv_page_size - 1});
-  n_blocks_alloc= (size >> srv_page_size_shift) -
-    (first_frame != reinterpret_cast<byte*>(blocks));
+  n_blocks_alloc= (size / innodb_buffer_pool_extent_size) *
+    pages_in_extent[srv_page_size_shift - UNIV_PAGE_SIZE_SHIFT_MIN];
 
-  while (first_frame < reinterpret_cast<const byte*>(blocks + n_blocks_alloc))
-    first_frame+= srv_page_size, n_blocks_alloc--;
+  n_blocks= 1;
+  buf_block_t *block= reinterpret_cast<buf_block_t*>(memory);
+  MEM_NOACCESS(block + 1, size - sizeof(*block));
+  MEM_MAKE_ADDRESSABLE(block->page.frame(), srv_page_size);
 
-  MEM_NOACCESS(first_frame, size - (frame - reinterpret_cast<byte*>(blocks)));
   /* The remaining blocks beyond the first one will be lazily
   initialized in buf_pool_t::lazy_allocate(). */
-  n_blocks= 1;
 
-  MEM_MAKE_DEFINED(blocks, sizeof *blocks);
-  ut_ad(!memcmp(blocks, field_ref_zero, sizeof *blocks));
+  MEM_MAKE_DEFINED(block, sizeof *block);
+  ut_ad(!memcmp(block, field_ref_zero, sizeof *block));
 
-  blocks->page.lock.init();
+  block->page.lock.init();
 
   mysql_mutex_init(buf_pool_mutex_key, &mutex, MY_MUTEX_INIT_FAST);
 
   UT_LIST_INIT(free, &buf_page_t::list);
-  UT_LIST_ADD_LAST(free, &blocks->page);
-  ut_d(blocks->page.in_free_list= true);
+  UT_LIST_ADD_LAST(free, &block->page);
+  ut_d(block->page.in_free_list= true);
   UT_LIST_INIT(LRU, &buf_page_t::LRU);
   UT_LIST_INIT(withdraw, &buf_page_t::list);
   withdraw_target= 0;
@@ -1031,18 +1174,26 @@ void buf_pool_t::close()
     }
   }
 
-  for (size_t i= 0; i < n_blocks; i++)
-    blocks[i].page.lock.free();
-
   {
     const size_t size{size_in_bytes};
-    ut_dodump(blocks, size);
+
+    for (byte *extent= memory, *end= memory + size; extent < end;
+         extent += innodb_buffer_pool_extent_size)
+      for (buf_block_t *block= reinterpret_cast<buf_block_t*>(extent),
+             *end= block +
+             pages_in_extent[srv_page_size_shift - UNIV_PAGE_SIZE_SHIFT_MIN];
+           block < end; block++)
+        block->page.lock.free();
+
+    ut_dodump(memory, size);
 #ifdef UNIV_PFS_MEMORY
     PSI_MEMORY_CALL(memory_free)(mem_key_buf_buf_pool, size, owner);
     owner= nullptr;
 #endif
     os_total_large_mem_allocated-= size;
-    my_large_free(blocks, size);
+    my_large_free(mem, mem_size);
+    mem= nullptr;
+    memory= nullptr;
   }
 
   pthread_cond_destroy(&done_flush_LRU);
@@ -1056,14 +1207,6 @@ void buf_pool_t::close()
   io_buf.close();
   aligned_free(const_cast<byte*>(field_ref_zero));
   field_ref_zero= nullptr;
-}
-
-buf_block_t *buf_pool_t::block_from(const void *ptr) const
-{
-  const size_t offs=
-    (reinterpret_cast<const byte*>(ptr) - first_frame) >> srv_page_size_shift;
-  ut_ad(offs < n_blocks);
-  return blocks + offs;
 }
 
 /** Try to reallocate a control block.
@@ -3460,7 +3603,7 @@ dberr_t buf_page_t::read_complete(const fil_node_t &node)
   ut_ad(zip_size() == node.space->zip_size());
   ut_ad(!!zip.ssize == !!zip.data);
 
-  page_t *page= frame();
+  page_t *page= buf_pool.is_uncompressed(this) ? frame() : nullptr;
   const byte *read_frame= zip.data ? zip.data : page;
   ut_ad(read_frame);
 
@@ -3585,6 +3728,60 @@ release_page:
   return DB_SUCCESS;
 }
 
+#ifdef BTR_CUR_HASH_ADAPT
+/** Clear the adaptive hash index on all pages in the buffer pool. */
+ATTRIBUTE_COLD void buf_pool_t::clear_hash_index()
+{
+  ut_ad(!resizing);
+  ut_ad(!btr_search_enabled);
+
+  std::set<dict_index_t*> garbage;
+
+  size_t n= n_blocks;
+
+  for (byte *extent= memory, *end= memory + size_in_bytes; extent < end;
+       extent += innodb_buffer_pool_extent_size)
+    for (buf_block_t *block= reinterpret_cast<buf_block_t*>(extent),
+           *end= block +
+           pages_in_extent[srv_page_size_shift - UNIV_PAGE_SIZE_SHIFT_MIN];
+         block < end && n--; block++)
+    {
+      dict_index_t *index= block->index;
+      assert_block_ahi_valid(block);
+
+      /* We can clear block->index and block->n_pointers when
+      holding all AHI latches exclusively; see the comments in buf0buf.h */
+
+      if (!index)
+      {
+# if defined UNIV_AHI_DEBUG || defined UNIV_DEBUG
+        ut_a(!block->n_pointers);
+# endif /* UNIV_AHI_DEBUG || UNIV_DEBUG */
+        continue;
+      }
+
+      ut_d(const auto s= block->page.state());
+      /* Another thread may have set the state to
+      REMOVE_HASH in buf_LRU_block_remove_hashed().
+
+      The state change in buf_pool_t::realloc() is not observable
+      here, because in that case we would have !block->index.
+
+      In the end, the entire adaptive hash index will be removed. */
+      ut_ad(s >= buf_page_t::UNFIXED || s == buf_page_t::REMOVE_HASH);
+# if defined UNIV_AHI_DEBUG || defined UNIV_DEBUG
+      block->n_pointers= 0;
+# endif /* UNIV_AHI_DEBUG || UNIV_DEBUG */
+      if (index->freed())
+        garbage.insert(index);
+      block->index= nullptr;
+    }
+
+  for (dict_index_t *index : garbage)
+    btr_search_lazy_free(index);
+}
+#endif /* BTR_CUR_HASH_ADAPT */
+
 #ifdef UNIV_DEBUG
 /** Check that all blocks are in a replaceable state.
 @return address of a non-free block
@@ -3592,37 +3789,42 @@ release_page:
 void buf_pool_t::assert_all_freed()
 {
   mysql_mutex_lock(&mutex);
-  for (size_t i= 0; i < n_blocks; i++)
-  {
-    buf_block_t *block= &blocks[i];
-    if (!block->page.in_file())
-      continue;
-    switch (const lsn_t lsn= block->page.oldest_modification()) {
-    case 0:
-    case 1:
-      break;
 
-    case 2:
-      ut_ad(fsp_is_system_temporary(block->page.id().space()));
-      break;
-
-    default:
-      if (srv_read_only_mode)
-      {
-        /* The page cleaner is disabled in read-only mode.  No pages
-        can be dirtied, so all of them must be clean. */
-        ut_ad(lsn == recv_sys.recovered_lsn ||
-              srv_force_recovery == SRV_FORCE_NO_LOG_REDO);
+  for (byte *extent= memory, *end= memory + size_in_bytes; extent < end;
+       extent += innodb_buffer_pool_extent_size)
+    for (buf_block_t *block= reinterpret_cast<buf_block_t*>(extent),
+           *end= block +
+           pages_in_extent[srv_page_size_shift - UNIV_PAGE_SIZE_SHIFT_MIN];
+         block < end; block++)
+    {
+      if (!block->page.in_file())
+        continue;
+      switch (const lsn_t lsn= block->page.oldest_modification()) {
+      case 0:
+      case 1:
         break;
+
+      case 2:
+        ut_ad(fsp_is_system_temporary(block->page.id().space()));
+        break;
+
+      default:
+        if (srv_read_only_mode)
+        {
+          /* The page cleaner is disabled in read-only mode.  No pages
+          can be dirtied, so all of them must be clean. */
+          ut_ad(lsn == recv_sys.recovered_lsn ||
+                srv_force_recovery == SRV_FORCE_NO_LOG_REDO);
+          break;
+        }
+
+        goto fixed_or_dirty;
       }
 
-      goto fixed_or_dirty;
+      if (!block->page.can_relocate())
+      fixed_or_dirty:
+        ib::fatal() << "Page " << block->page.id() << " still fixed or dirty";
     }
-
-    if (!block->page.can_relocate())
-    fixed_or_dirty:
-      ib::fatal() << "Page " << block->page.id() << " still fixed or dirty";
-  }
 
   mysql_mutex_unlock(&mutex);
 }
@@ -3678,7 +3880,7 @@ void buf_pool_t::validate()
 	/* Check the uncompressed blocks. */
 
 	for (ulint i = 0; i < n_blocks; i++) {
-		const buf_block_t* block = &blocks[i]; // FIXME
+		const buf_block_t* block = get_nth_page(i);
 
 		switch (const auto f = block->page.state()) {
 		case buf_page_t::NOT_USED:
@@ -3780,7 +3982,7 @@ void buf_pool_t::print()
 	n_found = 0;
 
 	for (size_t i = 0; i < n_blocks; i++) {
-		buf_block_t* block = &blocks[i];
+		buf_block_t* block = get_nth_page(i);
 		const buf_frame_t* frame = block->page.frame();
 
 		if (fil_page_index_page_check(frame)) {
@@ -3833,14 +4035,12 @@ ulint buf_get_latched_pages_number()
 {
   ulint fixed_pages_number= 0;
 
-  mysql_mutex_lock(&buf_pool.mutex);
+  mysql_mutex_assert_owner(&buf_pool.mutex);
 
   for (buf_page_t *b= UT_LIST_GET_FIRST(buf_pool.LRU); b;
        b= UT_LIST_GET_NEXT(LRU, b))
     if (b->state() > buf_page_t::UNFIXED)
       fixed_pages_number++;
-
-  mysql_mutex_unlock(&buf_pool.mutex);
 
   return fixed_pages_number;
 }

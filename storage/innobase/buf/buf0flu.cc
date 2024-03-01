@@ -860,7 +860,7 @@ bool buf_page_t::flush(bool evict, fil_space_t *space)
   size_t orig_size;
 #endif
   buf_tmp_buffer_t *slot= nullptr;
-  byte *page= frame();
+  byte *page= buf_pool.is_uncompressed(this) ? frame() : nullptr;
 
   if (UNIV_UNLIKELY(!page)) /* ROW_FORMAT=COMPRESSED */
   {
