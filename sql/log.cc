@@ -2212,9 +2212,7 @@ int binlog_commit(THD *thd, bool all, bool ro_1pc)
   }
 
   if (cache_mngr->trx_cache.empty() &&
-      ((thd->transaction->xid_state.get_state_code() != XA_PREPARED &&
-       !(thd->rgi_slave && thd->rgi_slave->is_parallel_exec &&
-         thd->lex->sql_command == SQLCOM_XA_COMMIT)) ||
+      (thd->transaction->xid_state.get_state_code() != XA_PREPARED ||
        !(thd->ha_data[binlog_hton->slot].ha_info[1].is_started() &&
          thd->ha_data[binlog_hton->slot].ha_info[1].is_trx_read_write())))
   {
@@ -2308,9 +2306,7 @@ static int binlog_rollback(handlerton *hton, THD *thd, bool all)
   }
 
   if (!cache_mngr->trx_cache.has_incident() && cache_mngr->trx_cache.empty() &&
-      ((thd->transaction->xid_state.get_state_code() != XA_PREPARED &&
-        !(thd->rgi_slave && thd->rgi_slave->is_parallel_exec &&
-          thd->lex->sql_command == SQLCOM_XA_ROLLBACK)) ||
+      (thd->transaction->xid_state.get_state_code() != XA_PREPARED ||
        !(thd->ha_data[binlog_hton->slot].ha_info[1].is_started() &&
          thd->ha_data[binlog_hton->slot].ha_info[1].is_trx_read_write())))
   {

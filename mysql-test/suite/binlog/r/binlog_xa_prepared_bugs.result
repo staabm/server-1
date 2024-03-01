@@ -1,3 +1,4 @@
+RESET MASTER;
 CREATE TABLE ta (c INT KEY) engine=Aria;
 XA START 'xid_a';
 INSERT INTO ta VALUES (1);

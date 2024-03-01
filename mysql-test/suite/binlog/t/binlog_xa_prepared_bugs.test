@@ -1,6 +1,8 @@
 --source include/have_binlog_format_row.inc
 --source include/have_innodb.inc
 
+RESET MASTER;
+
 CREATE TABLE ta (c INT KEY) engine=Aria;
 XA START 'xid_a';
 INSERT INTO ta VALUES (1);
