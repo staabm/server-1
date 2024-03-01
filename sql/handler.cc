@@ -4944,6 +4944,9 @@ int handler::ha_check_for_upgrade(HA_CHECK_OPT *check_opt)
   if (table->s->incompatible_version)
     return HA_ADMIN_NEEDS_ALTER;
 
+  if (unlikely((error= check_old_types())))
+    return error;                              // HA_ADMIN_NEEDS_ALTER
+
   if (!table->s->mysql_version)
   {
     /* check for blob-in-key error */
@@ -5207,8 +5210,6 @@ int handler::ha_check(THD *thd, HA_CHECK_OPT *check_opt)
 
   if (table->s->mysql_version < MYSQL_VERSION_ID)
   {
-    if (unlikely((error= check_old_types())))
-      return error;
     error= ha_check_for_upgrade(check_opt);
     if (unlikely(error && (error != HA_ADMIN_NEEDS_CHECK)))
       return error;
