@@ -1114,7 +1114,6 @@ bool buf_pool_t::create()
     : my_round_up_to_next_power(static_cast<uint32_t>(s));
 
   page_hash.create(2 * curr_size());
-  zip_hash.create(2 * curr_size());
   last_printout_time= time(nullptr);
 
   mysql_mutex_init(flush_list_mutex_key, &flush_list_mutex,
@@ -1202,7 +1201,6 @@ void buf_pool_t::close()
   pthread_cond_destroy(&done_free);
 
   page_hash.free();
-  zip_hash.free();
 
   io_buf.close();
   aligned_free(const_cast<byte*>(field_ref_zero));
@@ -2076,7 +2074,6 @@ got_block:
     ut_ad(w->access_time == 0);
     ut_ad(!w->oldest_modification());
     ut_ad(!w->zip.data);
-    ut_ad(!w->in_zip_hash);
     static_assert(buf_page_t::NOT_USED == 0, "efficiency");
     if (ut_d(auto s=) w->state())
     {
@@ -2527,7 +2524,6 @@ loop:
 		transactional_shared_lock_guard<page_hash_latch> g{hash_lock};
 		if (buf_pool.is_uncompressed(block)
 		    && page_id == block->page.id()) {
-			ut_ad(!block->page.in_zip_hash);
 			state = block->page.state();
 			/* Ignore guesses that point to read-fixed blocks.
 			We can only avoid a race condition by
@@ -2608,7 +2604,6 @@ loop:
 	goto loop;
 
 got_block:
-	ut_ad(!block->page.in_zip_hash);
 	state++;
 got_block_fixed:
 	ut_ad(state > buf_page_t::FREED);

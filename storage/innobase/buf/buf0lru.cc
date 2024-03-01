@@ -936,7 +936,6 @@ func_exit:
 
 		/* The fields of bpage were copied to b before
 		buf_LRU_block_remove_hashed() was invoked. */
-		ut_ad(!b->in_zip_hash);
 		ut_ad(b->in_LRU_list);
 		ut_ad(b->in_page_hash);
 		ut_d(b->in_page_hash = false);
@@ -1180,7 +1179,6 @@ static bool buf_LRU_block_remove_hashed(buf_page_t *bpage, const page_id_t id,
 		MEM_CHECK_ADDRESSABLE(bpage->zip.data, bpage->zip_size());
 	}
 
-	ut_ad(!bpage->in_zip_hash);
 	buf_pool.page_hash.remove(chain, bpage);
 	page_hash_latch& hash_lock = buf_pool.page_hash.lock_get(chain);
 

@@ -552,8 +552,6 @@ public:
   !frame && !zip.data means an active buf_pool.watch */
   page_zip_des_t zip;
 #ifdef UNIV_DEBUG
-  /** whether this->list is in buf_pool.zip_hash; protected by buf_pool.mutex */
-  bool in_zip_hash;
   /** whether this->LRU is in buf_pool.LRU (in_file());
   protected by buf_pool.mutex */
   bool in_LRU_list;
@@ -617,7 +615,7 @@ public:
     lock() /* not copied */,
     zip(b.zip),
 #ifdef UNIV_DEBUG
-    in_zip_hash(b.in_zip_hash), in_LRU_list(b.in_LRU_list),
+    in_LRU_list(b.in_LRU_list),
     in_page_hash(b.in_page_hash), in_free_list(b.in_free_list),
 #endif /* UNIV_DEBUG */
     list(b.list), LRU(b.LRU), old(b.old), freed_page_clock(b.freed_page_clock),
@@ -634,7 +632,6 @@ public:
     zip.fix= state;
     oldest_modification_= 0;
     lock.init();
-    ut_d(in_zip_hash= false);
     ut_d(in_free_list= false);
     ut_d(in_LRU_list= false);
     ut_d(in_page_hash= false);
@@ -1015,14 +1012,6 @@ struct buf_block_t{
   void initialise(const page_id_t page_id, ulint zip_size, uint32_t state);
 };
 
-/**********************************************************************//**
-Compute the hash fold value for blocks in buf_pool.zip_hash. */
-/* @{ */
-#define BUF_POOL_ZIP_FOLD_PTR(ptr) (ulint(ptr) >> srv_page_size_shift)
-#define BUF_POOL_ZIP_FOLD(b) BUF_POOL_ZIP_FOLD_PTR((b)->page.frame())
-#define BUF_POOL_ZIP_FOLD_BPAGE(b) BUF_POOL_ZIP_FOLD((buf_block_t*) (b))
-/* @} */
-
 /** A "Hazard Pointer" class used to iterate over buf_pool.LRU or
 buf_pool.flush_list. A hazard pointer is a buf_page_t pointer
 which we intend to iterate over next and we want it remain valid
@@ -1367,7 +1356,6 @@ public:
     buf_page_t *bpage= page_hash.get(page_id, chain);
     if (bpage >= &watch[0] && bpage < &watch[UT_ARR_SIZE(watch)])
     {
-      ut_ad(!bpage->in_zip_hash);
       ut_ad(!bpage->zip.data);
       if (!allow_watch)
         bpage= nullptr;
@@ -1388,7 +1376,6 @@ public:
     ut_ad(bpage.in_file());
     if (&bpage < &watch[0] || &bpage >= &watch[array_elements(watch)])
       return false;
-    ut_ad(!bpage.in_zip_hash);
     ut_ad(!bpage.zip.data);
     return true;
   }
@@ -1453,7 +1440,6 @@ public:
     mysql_mutex_assert_owner(&mutex);
     ut_ad(bpage->in_LRU_list);
     ut_ad(bpage->in_page_hash);
-    ut_ad(!bpage->in_zip_hash);
     ut_ad(bpage->in_file());
     lru_hp.adjust(bpage);
     lru_scan_itr.adjust(bpage);
@@ -1605,9 +1591,6 @@ public:
   indexed by page_id_t. Protected by both mutex and page_hash.lock_get(). */
   page_hash_table page_hash;
 
-  /** map of buf_page_t::frame() to buf_block_t blocks that belong
-  to buf_buddy_alloc(); protected by buf_pool.mutex */
-  hash_table_t zip_hash;
 	Atomic_counter<ulint>
 			n_pend_unzip;	/*!< number of pending decompressions */
 

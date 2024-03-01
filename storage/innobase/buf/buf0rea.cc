@@ -62,7 +62,6 @@ inline uint32_t buf_pool_t::watch_remove(buf_page_t *w,
   ut_ad(xtest() || page_hash.lock_get(chain).is_write_locked());
   ut_ad(w >= &watch[0]);
   ut_ad(w < &watch[array_elements(watch)]);
-  ut_ad(!w->in_zip_hash);
   ut_ad(!w->zip.data);
 
   uint32_t s{w->state()};
